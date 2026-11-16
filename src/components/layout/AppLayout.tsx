@@ -8,9 +8,13 @@ export function AppLayout() {
   return (
     <SidebarProvider>
       <AppSidebar />
-      <SidebarInset>
+      {/* The window height is the limit and the content area scrolls under the header, so the chat composer stays
+          at the bottom of the screen while the message list scrolls. */}
+      <SidebarInset className="h-svh">
         <AppHeader />
-        <Outlet />
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <Outlet />
+        </div>
       </SidebarInset>
     </SidebarProvider>
   );

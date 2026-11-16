@@ -10,6 +10,8 @@ export default defineConfig({
   resolve: {
     alias: { "@": path.resolve(import.meta.dirname, "./src") }
   },
+  // The WebLLM worker (lib/llm/worker.ts) is a module worker ({ type: "module" }), so it is bundled as an ES module.
+  worker: { format: "es" },
   server: {
     // Same single origin as nginx in Docker: the browser calls /api and never needs CORS.
     proxy: { "/api": "http://localhost:8080" }
