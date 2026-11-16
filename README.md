@@ -1,0 +1,9 @@
+# myassistant-web
+
+The web client of **MyAssistant**: React + TypeScript + Vite, served by nginx in Docker. It runs a Large Language Model in the browser with WebLLM (WebGPU) and manages the user's assistants and prompt templates through the MyAssistant API.
+
+- What is built and what is in scope now: [`docs/requirements.md`](../docs/requirements.md) in the wrapper repository `myassistant` (the source of truth).
+- Architecture and endpoints: [`docs/architecture.md`](../docs/architecture.md) in the wrapper.
+- Conventions for humans and coding agents: [`AGENTS.md`](AGENTS.md) (`CLAUDE.md` is generated from it with `sh scripts/sync-agent-instructions.sh`).
+
+Requires a WebGPU-capable browser (recent desktop Chrome or Edge). This repository is cloned next to the wrapper's `Makefile` by `make bootstrap`; run it with `make up` from the wrapper.
