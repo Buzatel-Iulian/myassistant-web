@@ -1,10 +1,12 @@
 import { useState } from "react";
-import { Monitor, Moon, Palette, Sun, type LucideIcon } from "lucide-react";
+import { LogOut, Monitor, Moon, Palette, Sun, UserRound, type LucideIcon } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import type { Theme } from "@/lib/theme";
 import { useAppStore } from "@/store/useAppStore";
+import { useAuthStore } from "@/store/useAuthStore";
 
 const THEME_OPTIONS: { value: Theme; label: string; icon: LucideIcon }[] = [
   { value: "system", label: "System", icon: Monitor },
@@ -44,8 +46,43 @@ function AppearanceSection() {
   );
 }
 
-// A list, not a switch on the section id: Phase 11 adds "Model cache" and "Account" as new rows here.
-const SECTIONS = [{ id: "appearance", label: "Appearance", icon: Palette, Content: AppearanceSection }] as const;
+// The settings' home of the account. Logging out navigates by itself: RequireAuth sends a logged-out visitor to
+// /login, which also closes this dialog with the layout.
+function AccountSection() {
+  const user = useAuthStore(state => state.user);
+
+  function handleLogout() {
+    useAuthStore.getState().logout();
+    toast.success("You are logged out.");
+  }
+
+  return (
+    <div className="flex flex-col gap-4">
+      <h2 className="text-lg font-semibold">Account</h2>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+        <dt className="text-muted-foreground">Name</dt>
+        <dd className="truncate">{user?.displayName ?? "…"}</dd>
+        <dt className="text-muted-foreground">Email</dt>
+        <dd className="truncate">{user?.email ?? "…"}</dd>
+      </dl>
+      <p className="text-sm text-muted-foreground">
+        You stay logged in in this tab until you close it, log out, or the login expires.
+      </p>
+      <div>
+        <Button variant="outline" onClick={handleLogout}>
+          <LogOut />
+          Log out
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// A list, not a switch on the section id: Phase 11 adds "Model cache" as a new row here.
+const SECTIONS = [
+  { id: "appearance", label: "Appearance", icon: Palette, Content: AppearanceSection },
+  { id: "account", label: "Account", icon: UserRound, Content: AccountSection }
+] as const;
 
 interface SettingsDialogProps {
   open: boolean;
