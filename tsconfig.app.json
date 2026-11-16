@@ -16,9 +16,13 @@
     "noEmit": true,
     "jsx": "react-jsx",
 
+    /* Path alias, mirrored in vite.config.ts */
+    "paths": { "@/*": ["./src/*"] },
+
     /* Linting */
     "strict": true,
-    "noUnusedLocals": true,
+    /* Unused locals are an ESLint error (@typescript-eslint/no-unused-vars) instead: shadcn generates files with an
+       unused `import * as React`, and a tsc error there would break the build after every `shadcn add`. */
     "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true

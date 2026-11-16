@@ -1,0 +1,8 @@
+node_modules
+dist
+coverage
+package-lock.json
+.DS_Store
+# Generated from AGENTS.md by scripts/sync-agent-instructions.sh; formatting them would break the --check.
+CLAUDE.md
+.github/copilot-instructions.md

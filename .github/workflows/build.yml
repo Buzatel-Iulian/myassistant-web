@@ -1,0 +1,31 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # CLAUDE.md and .github/copilot-instructions.md must match AGENTS.md (they are generated from it).
+      - run: sh scripts/sync-agent-instructions.sh --check
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: npm test -- --run
+      # tsc -b type-checks the whole project, then vite builds the bundle nginx serves.
+      - run: npm run build

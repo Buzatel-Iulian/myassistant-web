@@ -8,7 +8,7 @@ This project is built **step by step, in phases**. Read the rules below before p
 
 - **`docs/requirements.md` in the wrapper repository (`myassistant`) is the single source of truth.** It defines the phases, what is in scope now and what is deferred. `docs/architecture.md` there holds the data model and the endpoint table.
 - If a conversation conflicts with `docs/requirements.md`, **the file wins** until it is updated.
-- When a decision changes, update `docs/requirements.md` **in the same step** as the code. A deferred requirement is moved (to a later phase, *Later* or *Non-goals*), never silently dropped.
+- When a decision changes, update `docs/requirements.md` **in the same step** as the code. A deferred requirement is moved (to a later phase, _Later_ or _Non-goals_), never silently dropped.
 - **One new concept per phase.** Do not implement future phases in advance, and do not add libraries, abstractions or configuration a later phase will need.
 
 ## 2. Code rules
@@ -18,8 +18,14 @@ This project is built **step by step, in phases**. Read the rules below before p
 - **Only `src/lib/llm/engine.ts` talks to WebLLM** (the engine runs in `lib/llm/worker.ts`). Components use the `useEngine()` hook.
 - **Only `src/lib/llm/prompt.ts` builds the system prompt.** No other place concatenates prompt text. Variable values are untrusted text: single pass, no recursion, trimmed and capped.
 - **One owner per piece of data:** chat messages belong to the chat component/hook. The Zustand store holds the token, the active assistant id and UI preferences — **never messages or copies of server data.**
-- **New UI components come from the shadcn CLI** (`npx shadcn@latest add ...`); `src/components/ui/` is generated and not edited by hand. **Icons only from `lucide-react`.**
-- Use the `@/*` import alias. Folder layout: `pages/`, `components/` (`ui/`, `layout/`, `chat/`, `assistants/`, `templates/`, `settings/`), `lib/` (`api/`, `llm/`, `types.ts`), `store/`, `hooks/`.
+- **New UI components come from the shadcn CLI** (`npx shadcn@latest add ...`, style `base-nova` on Base UI, see `components.json`); `src/components/ui/` is generated and not edited by hand. **Icons only from `lucide-react`.**
+  - Run `npm run format` after `shadcn add`: the generated files are formatted and linted like the rest of the code (as in SkillForge).
+  - The only hand edits to generated files, both ported from SkillForge: `ui/sonner.tsx` takes its theme from `useResolvedTheme()` instead of `next-themes` (one theme system), and `hooks/use-mobile.ts` uses `useSyncExternalStore` (the generated version breaks `react-hooks/set-state-in-effect`). Re-apply them if a re-add overwrites these files.
+  - ESLint turns off `react-refresh/only-export-components` for `src/components/ui/**` only (shadcn exports `buttonVariants`, `useSidebar`, ... next to the components). Unused locals are an ESLint error, not a `tsc` one (`noUnusedLocals` is off because shadcn generates an unused `import * as React`).
+- Use the `@/*` import alias. Folder layout: `pages/`, `components/` (`ui/`, `layout/`, `chat/`, `assistants/`, `templates/`, `settings/`), `lib/` (`api/`, `llm/`, `types.ts`), `store/`, `hooks/`. Create a folder when the first file needs it.
+- File names: components and pages in PascalCase (`AppSidebar.tsx`, `ChatPage.tsx`), hooks and stores as `useXxx.ts`; shadcn-generated files keep their kebab-case names.
+- **Theme:** `useAppStore.theme` (`system | light | dark`, persisted in `localStorage`) is written only by the settings dialog; everything that draws reads `useResolvedTheme()` (`light | dark`). `ThemeProvider` puts the `dark` class on `<html>`.
+- **Tests:** Vitest, `*.test.ts(x)` next to the code. The default environment is Node; a test that needs the DOM or `localStorage` starts with `// @vitest-environment jsdom`.
 - Comments explain **why**, never what.
 - **Run `npm run format` before considering a step done** (`npm run format:check` is the CI variant), together with `npm run lint`, `npm test -- --run` and `npm run build`.
 
