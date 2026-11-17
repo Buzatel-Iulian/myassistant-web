@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { detectVariables, findPlaceholders, MAX_VALUE_LENGTH, renderSystemPrompt } from "@/lib/llm/prompt";
+import {
+  DEFAULT_SYSTEM_PROMPT,
+  detectVariables,
+  findPlaceholders,
+  MAX_VALUE_LENGTH,
+  renderSystemPrompt,
+  systemPromptFor
+} from "@/lib/llm/prompt";
+import type { Template } from "@/lib/types";
 
 const tutor = {
   content: "You are a patient {{language}} tutor. The student's level is {{level}}.",
@@ -133,5 +141,33 @@ describe("detectVariables", () => {
 
   it("finds nothing to add when every placeholder is declared", () => {
     expect(detectVariables("{{a}}", ["a", "unused"])).toEqual({ missing: [], invalid: [] });
+  });
+});
+
+describe("systemPromptFor (the chat's first message)", () => {
+  const template: Template = {
+    ...tutor,
+    id: "t1",
+    version: 0,
+    name: "Language tutor",
+    description: null,
+    createdAt: "2026-11-17T00:00:00Z",
+    updatedAt: "2026-11-17T00:00:00Z"
+  };
+
+  it("renders the template with the API's resolved values", () => {
+    expect(systemPromptFor({ template, resolvedVariableValues: { language: "French", level: "advanced" } })).toBe(
+      "You are a patient French tutor. The student's level is advanced."
+    );
+  });
+
+  it("still falls back to the default for a value resolved to blank", () => {
+    expect(systemPromptFor({ template, resolvedVariableValues: { language: "  ", level: "" } })).toBe(
+      "You are a patient English tutor. The student's level is beginner."
+    );
+  });
+
+  it("uses the default prompt for an assistant without a template (none, or deleted meanwhile)", () => {
+    expect(systemPromptFor({ template: null, resolvedVariableValues: {} })).toBe(DEFAULT_SYSTEM_PROMPT);
   });
 });

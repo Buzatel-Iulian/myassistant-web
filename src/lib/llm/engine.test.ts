@@ -3,7 +3,7 @@ import type { InitProgressReport } from "@mlc-ai/web-llm";
 
 // A fake WebLLM: the real one needs WebGPU and a model download. It records what the engine module asks of it.
 const fake = vi.hoisted(() => ({
-  reload: vi.fn<(modelId: string) => Promise<void>>(),
+  reload: vi.fn<(modelId: string, chatOpts?: unknown) => Promise<void>>(),
   interruptGenerate: vi.fn<() => void>(),
   create: vi.fn<(request: { messages: unknown[]; stream: boolean }) => Promise<AsyncIterable<unknown>>>(),
   progress: null as ((report: { progress: number; timeElapsed: number; text: string }) => void) | null,
@@ -147,8 +147,8 @@ describe("engine", () => {
       fake.reload.mockReturnValueOnce(loadA.promise);
 
       const first = engine.loadModel("model-a", noProgress);
-      const second = engine.loadModel("model-b", noProgress);
       await vi.waitFor(() => expect(fake.reload).toHaveBeenCalledTimes(1));
+      const second = engine.loadModel("model-b", noProgress);
       // Give the second load every chance to start early: it must not.
       await new Promise(resolve => setTimeout(resolve, 10));
       expect(fake.reload).toHaveBeenCalledTimes(1);
@@ -186,6 +186,76 @@ describe("engine", () => {
       await engine.loadModel("model-a", noProgress);
       expect(fake.reload).toHaveBeenCalledTimes(2);
       expect(engine.getLoadedModelId()).toBe("model-a");
+    });
+  });
+
+  describe("loadModel with load options (Phase 10)", () => {
+    const small = { context_window_size: 1024, sliding_window_size: -1 };
+    const large = { context_window_size: 4096, sliding_window_size: -1 };
+
+    it("passes the options to WebLLM's reload", async () => {
+      await engine.loadModel("model-a", noProgress, small);
+
+      expect(fake.reload).toHaveBeenCalledWith("model-a", small);
+      expect(engine.isModelLoaded("model-a", small)).toBe(true);
+      expect(engine.isModelLoaded("model-a", large)).toBe(false);
+    });
+
+    it("does not reload the same model with the same options", async () => {
+      await engine.loadModel("model-a", noProgress, small);
+      await engine.loadModel("model-a", noProgress, { ...small });
+
+      expect(fake.reload).toHaveBeenCalledTimes(1);
+    });
+
+    it("reloads the same model when the context window changes", async () => {
+      await engine.loadModel("model-a", noProgress, small);
+      await engine.loadModel("model-a", noProgress, large);
+
+      expect(fake.reload.mock.calls).toEqual([
+        ["model-a", small],
+        ["model-a", large]
+      ]);
+      expect(engine.isModelLoaded("model-a", large)).toBe(true);
+    });
+
+    it("skips a queued load that a newer request replaced before it started", async () => {
+      const loadA = deferred();
+      fake.reload.mockReturnValueOnce(loadA.promise);
+
+      const a = engine.loadModel("model-a", noProgress);
+      await vi.waitFor(() => expect(fake.reload).toHaveBeenCalledTimes(1));
+      const b = engine.loadModel("model-b", noProgress);
+      const c = engine.loadModel("model-c", noProgress);
+      loadA.resolve();
+      await Promise.all([a, b, c]);
+
+      expect(fake.reload.mock.calls.map(call => call[0])).toEqual(["model-a", "model-c"]);
+      expect(engine.isModelLoaded("model-b")).toBe(false);
+      expect(engine.isModelLoaded("model-c")).toBe(true);
+    });
+
+    it("waits for a running answer to end before replacing the model", async () => {
+      await engine.loadModel("model-a", noProgress);
+      const release = deferred();
+      fake.create.mockImplementation(async () =>
+        (async function* () {
+          yield chunk("old");
+          await release.promise;
+          yield chunk("tail");
+        })()
+      );
+      const answer = collect(engine.streamChat([{ role: "user", content: "hi" }]));
+      await vi.waitFor(() => expect(fake.create).toHaveBeenCalled());
+
+      const load = engine.loadModel("model-b", noProgress);
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(fake.reload).toHaveBeenCalledTimes(1);
+
+      engine.stop();
+      release.resolve();
+      await Promise.all([answer, load]);
+      expect(fake.reload.mock.calls.map(call => call[0])).toEqual(["model-a", "model-b"]);
     });
   });
 
@@ -236,6 +306,33 @@ describe("engine", () => {
       expect(await result).toEqual([]);
       // Once during the wait and again once the stream started, because WebLLM clears its flag when it starts.
       expect(fake.interruptGenerate.mock.calls.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("a new answer does not cancel the stop of an older one that is still draining", async () => {
+      await engine.loadModel("model-a", noProgress);
+      const release = deferred();
+      fake.create
+        .mockImplementationOnce(async () =>
+          (async function* () {
+            yield chunk("old-1");
+            await release.promise;
+            yield chunk("old-2");
+          })()
+        )
+        .mockResolvedValueOnce(chunks("new"));
+
+      const old: string[] = [];
+      const draining = (async () => {
+        for await (const text of engine.streamChat(messages)) old.push(text);
+      })();
+      await vi.waitFor(() => expect(old).toEqual(["old-1"]));
+      engine.stop();
+      const fresh = collect(engine.streamChat(messages));
+      release.resolve();
+
+      await draining;
+      expect(old).toEqual(["old-1"]);
+      expect(await fresh).toEqual(["new"]);
     });
 
     it("a new answer is not affected by an earlier stop", async () => {

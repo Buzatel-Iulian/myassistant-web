@@ -1,14 +1,50 @@
-import { CircleAlert } from "lucide-react";
+import { Link, Navigate, useParams } from "react-router";
+import { Bot, CircleAlert, Plus } from "lucide-react";
 
-import { Chat } from "@/components/chat/Chat";
+import { AssistantChat } from "@/components/chat/Chat";
+import { pickAssistant } from "@/components/chat/pickAssistant";
+import { LoadErrorPage, LoadingPage } from "@/components/common/PageState";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useConfigurations } from "@/hooks/useConfigurations";
 import { useWebGpuSupport } from "@/hooks/useWebGpuSupport";
+import { useAppStore } from "@/store/useAppStore";
 
-// `:configId` selects the assistant once assistants can be loaded into the chat (Phase 10); for now every chat uses
-// the same hard-coded model and system prompt.
+function OpenAssistant() {
+  const result = useConfigurations();
+  const lastUsedId = useAppStore(state => state.activeConfigurationId);
+
+  if (result.status === "loading") return <LoadingPage label="Loading your assistants" />;
+  if (result.status === "error")
+    return <LoadErrorPage title="Could not load your assistants" message={result.message} />;
+
+  const assistant = pickAssistant(result.data, lastUsedId);
+  if (!assistant) {
+    return (
+      <div
+        className="flex flex-1 flex-col items-center justify-center gap-4 p-6 text-center"
+        data-testid="no-assistants"
+      >
+        <Bot className="size-8 text-muted-foreground" />
+        <h1 className="text-2xl font-semibold">No assistant yet</h1>
+        <p className="max-w-md text-muted-foreground">
+          An assistant is a model, its settings and a prompt template. Create one to start chatting.
+        </p>
+        <Button render={<Link to="/assistants/new" />}>
+          <Plus /> Create an assistant
+        </Button>
+      </div>
+    );
+  }
+  // The chat stores the id it opens, so a last-used id that is no longer in the list is replaced right away.
+  return <Navigate to={`/chat/${assistant.id}`} replace />;
+}
+
+// `/chat/:configId` chats with that assistant; `/chat` opens the one `pickAssistant` chooses.
 export function ChatPage() {
   const webGpu = useWebGpuSupport();
+  const { configId } = useParams();
 
   if (webGpu === "checking") {
     return (
@@ -34,5 +70,7 @@ export function ChatPage() {
     );
   }
 
-  return <Chat />;
+  if (!configId) return <OpenAssistant />;
+  // Keyed by the id: another assistant is a new chat from scratch (fetch, model, conversation), never a carry-over.
+  return <AssistantChat key={configId} configId={configId} />;
 }

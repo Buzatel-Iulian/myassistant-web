@@ -4,7 +4,11 @@ import type { ChangeSignal } from "@/lib/api/changes";
 import { ApiError } from "@/lib/api/client";
 import { useAuthStore } from "@/store/useAuthStore";
 
-export type QueryState<T> = { status: "loading" } | { status: "error"; message: string } | { status: "ready"; data: T };
+export type QueryState<T> =
+  | { status: "loading" }
+  // `httpStatus` is the API's status (0 when the server was not reached), so a page can tell a 404 from an outage.
+  | { status: "error"; message: string; httpStatus: number }
+  | { status: "ready"; data: T };
 
 interface Fetched<T> {
   state: QueryState<T>;
@@ -46,7 +50,8 @@ export function useApiQuery<T>(
         if (controller.signal.aborted) return;
         if (!(error instanceof ApiError)) console.error(failureMessage, error);
         const message = error instanceof ApiError ? error.detail : failureMessage;
-        setFetched({ state: { status: "error", message }, token, key });
+        const httpStatus = error instanceof ApiError ? error.status : 0;
+        setFetched({ state: { status: "error", message, httpStatus }, token, key });
       });
     return () => controller.abort();
     // `load` is a new function on every render; `key` stands for what it fetches.

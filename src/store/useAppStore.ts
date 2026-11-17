@@ -2,30 +2,52 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
 import { isTheme, type Theme } from "@/lib/theme";
+import { useAuthStore } from "@/store/useAuthStore";
 
 interface AppState {
   theme: Theme;
+  /** The assistant the chat opened last, so the app reopens on it. An id only: the assistant itself is the API's. */
+  activeConfigurationId: string | null;
   setTheme: (theme: Theme) => void;
+  setActiveConfigurationId: (id: string | null) => void;
 }
 
-// UI preferences only. Server data (assistants, templates) belongs to the API and chat messages to the chat
-// component, so neither is ever copied here: two owners of the same data drift apart.
-// localStorage (not sessionStorage like the login token in Phase 7): a theme should survive closing the tab.
+type PersistedApp = Pick<AppState, "theme" | "activeConfigurationId">;
+
+// UI preferences and the active assistant's id. Server data (assistants, templates) belongs to the API and chat
+// messages to the chat component, so neither is ever copied here: two owners of the same data drift apart.
+// localStorage (not sessionStorage like the login token in Phase 7): a theme, and the assistant last used, should
+// survive closing the tab.
 export const useAppStore = create<AppState>()(
   persist(
     set => ({
       theme: "system",
-      setTheme: theme => set({ theme })
+      activeConfigurationId: null,
+      setTheme: theme => set({ theme }),
+      setActiveConfigurationId: activeConfigurationId => set({ activeConfigurationId })
     }),
     {
       name: "myassistant-app",
       storage: createJSONStorage(() => localStorage),
-      partialize: state => ({ theme: state.theme }),
-      // A hand-edited or outdated value in localStorage must not leave the app without a valid theme.
+      partialize: ({ theme, activeConfigurationId }): PersistedApp => ({ theme, activeConfigurationId }),
+      // A hand-edited or outdated value in localStorage must not leave the app without a valid theme or with a
+      // non-string id.
       merge: (persisted, current) => {
-        const theme = (persisted as Partial<AppState> | undefined)?.theme;
-        return { ...current, theme: isTheme(theme) ? theme : current.theme };
+        const saved = persisted as Partial<PersistedApp> | undefined;
+        const id = saved?.activeConfigurationId;
+        return {
+          ...current,
+          theme: isTheme(saved?.theme) ? saved.theme : current.theme,
+          activeConfigurationId: typeof id === "string" && id ? id : null
+        };
       }
     }
   )
 );
+
+// Logging out (the button, a 401 or the session's expiry) forgets the active assistant: the next person to log in
+// on this browser must not be sent to it. A tab that starts logged out (a new tab) is not a logout, so the id
+// survives closing the tab; it is checked against the user's own assistants before it is opened.
+useAuthStore.subscribe((state, previous) => {
+  if (previous.token && !state.token) useAppStore.getState().setActiveConfigurationId(null);
+});

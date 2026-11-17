@@ -1,4 +1,4 @@
-import type { TemplateVariable } from "@/lib/types";
+import type { Configuration, TemplateVariable } from "@/lib/types";
 
 // The single place that builds the system prompt (AGENTS.md §2), the counterpart of SkillForge's buildSystemPrompt.
 // Variable values are typed by the user, so they are treated as untrusted text: trimmed, capped, and inserted in
@@ -59,6 +59,19 @@ export function renderSystemPrompt(
     const value = Object.hasOwn(variableValues, name) ? clip(variableValues[name] ?? "") : "";
     return value || clip(variable.defaultValue ?? "");
   });
+}
+
+/** The system prompt of an assistant without a template (none chosen, or its template was deleted meanwhile). */
+export const DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant.";
+
+/**
+ * The system prompt a chat with `configuration` starts with: its template rendered with the API's
+ * `resolvedVariableValues` (the values with the defaults filled in; `renderSystemPrompt` still applies its own
+ * fallback, trimming and cap), or the default prompt when the assistant has no template.
+ */
+export function systemPromptFor(configuration: Pick<Configuration, "template" | "resolvedVariableValues">): string {
+  if (!configuration.template) return DEFAULT_SYSTEM_PROMPT;
+  return renderSystemPrompt(configuration.template, configuration.resolvedVariableValues);
 }
 
 /** The placeholders of `content`, each once, in order of appearance, exactly as written (as the API reports them). */

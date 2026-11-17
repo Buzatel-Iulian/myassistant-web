@@ -9,11 +9,17 @@ export interface ChatMessage {
   content: string;
 }
 
-/** The per-request sampling settings. Phase 10 maps an assistant's settings onto these. */
+/** The per-request sampling settings (`toChatOptions` in `settings.ts` maps an assistant's settings onto these). */
 export type GenerationParams = Pick<
   ChatCompletionRequestBase,
   "temperature" | "top_p" | "max_tokens" | "frequency_penalty" | "presence_penalty"
 >;
+
+/**
+ * What is fixed when a model is loaded (WebLLM's `ChatOptions`, the subset the app sets): the KV cache is allocated
+ * for `context_window_size` tokens, so changing it means loading the model again.
+ */
+export type LoadOptions = Pick<ChatOptions, "context_window_size" | "sliding_window_size">;
 
 /** Model loading progress: `value` from 0 to 1 and WebLLM's human-readable report text. */
 export interface LoadProgress {
@@ -32,12 +38,26 @@ export function toLoadProgress(report: InitProgressReport): LoadProgress {
 let engine: WebWorkerMLCEngine | null = null;
 let engineCreation: Promise<WebWorkerMLCEngine> | null = null;
 let loadedModelId: string | null = null;
+// The model and the load options it was loaded with: the same model with another context window is another load.
+let loadedKey: string | null = null;
 // Loads run one after another: WebLLM's reload() is not safe to call while another reload is still running.
 let loadQueue: Promise<void> = Promise.resolve();
-let pendingLoad: { modelId: string; promise: Promise<void> } | null = null;
+let pendingLoad: { key: string; promise: Promise<void> } | null = null;
+// The key of the latest loadModel() call. A queued load that a newer call replaced before it started is skipped:
+// a user who clicks through three assistants waits for one load, not three.
+let wantedKey: string | null = null;
 // Only the latest caller of loadModel() receives progress; the engine keeps a single callback.
 let progressListener: ProgressListener | null = null;
-let stopRequested = false;
+
+// Each answer being streamed has its own stop flag, so a new answer (another assistant's chat) cannot clear the stop
+// asked for an older one that is still draining. `generating` settles when no answer is running: a reload waits for
+// it, because unloading the model under a running generation would fail inside the worker.
+interface ActiveStream {
+  stopped: boolean;
+}
+const activeStreams = new Set<ActiveStream>();
+let generationsDone: Promise<void> = Promise.resolve();
+let endGenerations: (() => void) | null = null;
 
 type WebLlm = typeof import("@mlc-ai/web-llm");
 let webLlm: Promise<WebLlm> | null = null;
@@ -75,51 +95,88 @@ export function getLoadedModelId(): string | null {
   return loadedModelId;
 }
 
+function loadKey(modelId: string, options?: LoadOptions): string {
+  return `${modelId}|${options?.context_window_size ?? ""}|${options?.sliding_window_size ?? ""}`;
+}
+
+/** Whether `modelId` is loaded with these options, so a chat can start without showing the loader. */
+export function isModelLoaded(modelId: string, options?: LoadOptions): boolean {
+  return !pendingLoad && loadedKey === loadKey(modelId, options);
+}
+
 /**
- * Loads `modelId` into the engine, downloading it on first use (later loads come from the browser cache).
- * The same model already loaded resolves at once; the same model already loading shares that load; another model
- * waits for the current load to finish, then replaces it.
+ * Loads `modelId` with `options` into the engine, downloading it on first use (later loads come from the browser
+ * cache). The same model with the same options already loaded resolves at once; the same load already running is
+ * shared; anything else waits for the current load and for any running answer to end, then replaces the model.
+ * The same model with another context window is loaded again (from the cache): WebLLM sizes its KV cache at load.
  */
-export function loadModel(modelId: string, onProgress: ProgressListener, chatOpts?: ChatOptions): Promise<void> {
+export function loadModel(modelId: string, onProgress: ProgressListener, options?: LoadOptions): Promise<void> {
+  const key = loadKey(modelId, options);
   progressListener = onProgress;
-  if (pendingLoad?.modelId === modelId) return pendingLoad.promise;
-  if (!pendingLoad && loadedModelId === modelId) return Promise.resolve();
+  wantedKey = key;
+  if (pendingLoad?.key === key) return pendingLoad.promise;
+  if (!pendingLoad && loadedKey === key) return Promise.resolve();
 
   const promise = loadQueue.then(async () => {
-    if (loadedModelId === modelId) return;
+    if (loadedKey === key || wantedKey !== key) return;
+    await generationsDone;
     loadedModelId = null;
-    await (await getEngine()).reload(modelId, chatOpts);
+    loadedKey = null;
+    await (await getEngine()).reload(modelId, options);
     loadedModelId = modelId;
+    loadedKey = key;
   });
   const settled = () => {
     if (pendingLoad?.promise === promise) pendingLoad = null;
   };
-  pendingLoad = { modelId, promise };
+  pendingLoad = { key, promise };
   // A failed load must not block the next one, and a retry must start a fresh load.
   loadQueue = promise.then(settled, settled);
   return promise;
 }
 
-/** Streams the assistant's answer to `messages`, one text delta at a time. */
+function startGeneration(): ActiveStream {
+  if (activeStreams.size === 0) generationsDone = new Promise(resolve => (endGenerations = resolve));
+  const stream = { stopped: false };
+  activeStreams.add(stream);
+  return stream;
+}
+
+function endGeneration(stream: ActiveStream): void {
+  activeStreams.delete(stream);
+  if (activeStreams.size === 0) {
+    endGenerations?.();
+    endGenerations = null;
+  }
+}
+
+/**
+ * Streams the assistant's answer to `messages`, one text delta at a time. `params` are the per-request sampling
+ * settings (temperature, top-p, max tokens, penalties).
+ */
 export async function* streamChat(messages: ChatMessage[], params: GenerationParams = {}): AsyncGenerator<string> {
   if (!engine || loadedModelId === null) throw new Error("No model is loaded yet.");
-  stopRequested = false;
-  const chunks = await engine.chat.completions.create({ ...params, messages, stream: true });
-  for await (const chunk of chunks) {
-    if (stopRequested) {
-      // Stop can arrive before the worker starts generating, and WebLLM clears its interrupt flag when it starts.
-      // Asking again stops it at the next token; the stream is still drained so the worker ends the request cleanly.
-      engine.interruptGenerate();
-      continue;
+  const stream = startGeneration();
+  try {
+    const chunks = await engine.chat.completions.create({ ...params, messages, stream: true });
+    for await (const chunk of chunks) {
+      if (stream.stopped) {
+        // Stop can arrive before the worker starts generating, and WebLLM clears its interrupt flag when it starts.
+        // Asking again stops it at the next token; the stream is still drained so the worker ends the request cleanly.
+        engine.interruptGenerate();
+        continue;
+      }
+      const text = chunk.choices[0]?.delta?.content;
+      if (text) yield text;
     }
-    const text = chunk.choices[0]?.delta?.content;
-    if (text) yield text;
+  } finally {
+    endGeneration(stream);
   }
 }
 
 /** Interrupts the answer being generated (the Stop button). The stream then ends normally. */
 export function stop(): void {
-  stopRequested = true;
+  for (const stream of activeStreams) stream.stopped = true;
   engine?.interruptGenerate();
 }
 

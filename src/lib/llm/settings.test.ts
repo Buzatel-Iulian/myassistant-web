@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { DEFAULT_SETTINGS, MAX_TOKENS_MESSAGE, SETTINGS_LIMITS, validateSettings } from "@/lib/llm/settings";
+import {
+  DEFAULT_SETTINGS,
+  MAX_TOKENS_MESSAGE,
+  SETTINGS_LIMITS,
+  toChatOptions,
+  validateSettings
+} from "@/lib/llm/settings";
 import type { GenerationSettings } from "@/lib/types";
 
 const settings = (overrides: Partial<GenerationSettings>): GenerationSettings => ({
@@ -65,5 +71,41 @@ describe("settings limits", () => {
     expect(validateSettings(settings({ maxTokens: 4096, contextWindowSize: 512 }))).toEqual({
       "settings.maxTokens": MAX_TOKENS_MESSAGE
     });
+  });
+});
+
+describe("toChatOptions", () => {
+  const assistant: GenerationSettings = {
+    temperature: 0.2,
+    topP: 0.9,
+    maxTokens: 256,
+    contextWindowSize: 1024,
+    frequencyPenalty: 0.5,
+    presencePenalty: -0.3
+  };
+
+  it("sends the context window with the model load, as a fixed window", () => {
+    expect(toChatOptions(assistant).load).toEqual({ context_window_size: 1024, sliding_window_size: -1 });
+  });
+
+  it("sends the sampling settings with every request, under WebLLM's names", () => {
+    expect(toChatOptions(assistant).request).toEqual({
+      temperature: 0.2,
+      top_p: 0.9,
+      max_tokens: 256,
+      frequency_penalty: 0.5,
+      presence_penalty: -0.3
+    });
+  });
+
+  it("keeps zero values (temperature 0 is greedy decoding, not 'unset')", () => {
+    const greedy = toChatOptions(settings({ temperature: 0, topP: 0, frequencyPenalty: 0, presencePenalty: 0 }));
+    expect(greedy.request).toMatchObject({ temperature: 0, top_p: 0, frequency_penalty: 0, presence_penalty: 0 });
+  });
+
+  it("does not put a load option in the request or a request option in the load", () => {
+    const { load, request } = toChatOptions(DEFAULT_SETTINGS);
+    expect(Object.keys(load).sort()).toEqual(["context_window_size", "sliding_window_size"]);
+    expect(request).not.toHaveProperty("context_window_size");
   });
 });
