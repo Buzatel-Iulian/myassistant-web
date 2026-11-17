@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { chatReducer, historyForModel, initialChatState, visibleMessages } from "@/components/chat/chatState";
+import {
+  chatReducer,
+  historyForModel,
+  initialChatState,
+  visibleMessages,
+  withSystemPrompt
+} from "@/components/chat/chatState";
 
 const SYSTEM = "You are a helpful assistant.";
 
@@ -91,5 +97,27 @@ describe("chatReducer", () => {
     answered = chatReducer(answered, { type: "appendAnswer", text: "Hello" });
     answered = chatReducer(answered, { type: "finishAnswer" });
     expect(chatReducer(answered, { type: "withdraw" })).toBe(answered);
+  });
+});
+
+describe("withSystemPrompt (Phase 12)", () => {
+  it("puts the assistant's current prompt first and keeps the conversation", () => {
+    const sent = chatReducer(initialChatState("old prompt"), { type: "send", text: "hi" });
+    const updated = withSystemPrompt(sent, "new prompt");
+
+    expect(updated.messages[0]).toEqual({ role: "system", content: "new prompt" });
+    expect(updated.messages.slice(1)).toEqual(sent.messages.slice(1));
+    expect(updated.isAnswering).toBe(true);
+  });
+
+  it("returns the same state when the prompt did not change", () => {
+    const state = initialChatState(SYSTEM);
+    expect(withSystemPrompt(state, SYSTEM)).toBe(state);
+  });
+
+  it("adds the prompt to a conversation without one", () => {
+    expect(withSystemPrompt({ messages: [], isAnswering: false }, SYSTEM).messages).toEqual([
+      { role: "system", content: SYSTEM }
+    ]);
   });
 });

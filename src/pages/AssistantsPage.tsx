@@ -13,6 +13,7 @@ import { ApiError } from "@/lib/api/client";
 import { reportUnexpected } from "@/lib/unexpected";
 import { deleteConfiguration, duplicateConfiguration } from "@/lib/api/configurations";
 import type { Configuration } from "@/lib/types";
+import { useConversationStore } from "@/store/useConversationStore";
 
 // Favorites first, then the API's order (by name): stable, so it does not depend on how the API breaks ties.
 function favoritesFirst(configurations: readonly Configuration[]): Configuration[] {
@@ -47,6 +48,8 @@ export function AssistantsPage() {
       if (!toDelete) return;
       try {
         await deleteConfiguration(toDelete.id);
+        // Its conversation goes with it. Its model stays resident: another assistant may use it (Settings unloads it).
+        useConversationStore.getState().drop(toDelete.id);
         toast.success(`Assistant "${toDelete.name}" deleted`);
       } finally {
         setToDelete(null);

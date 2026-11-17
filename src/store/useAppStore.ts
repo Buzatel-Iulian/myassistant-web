@@ -15,7 +15,8 @@ interface AppState {
 type PersistedApp = Pick<AppState, "theme" | "activeConfigurationId">;
 
 // UI preferences and the active assistant's id. Server data (assistants, templates) belongs to the API and chat
-// messages to the chat component, so neither is ever copied here: two owners of the same data drift apart.
+// messages to the in-memory conversation store (`useConversationStore`, never persisted), so neither is ever copied
+// here: two owners of the same data drift apart, and this store is saved to localStorage.
 // localStorage (not sessionStorage like the login token in Phase 7): a theme, and the assistant last used, should
 // survive closing the tab.
 export const useAppStore = create<AppState>()(

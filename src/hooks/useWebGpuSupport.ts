@@ -19,15 +19,19 @@ export async function detectWebGpu(nav: WebGpuNavigator): Promise<boolean> {
 
 // Asked once per page load: the answer cannot change while the page is open, and requestAdapter() is not free.
 let detection: Promise<boolean> | null = null;
+// The answer once known, so a chat opened again starts from it instead of one "checking" skeleton frame (Phase 12).
+let detected: WebGpuSupport | null = null;
 
 export function useWebGpuSupport(): WebGpuSupport {
-  const [support, setSupport] = useState<WebGpuSupport>("checking");
+  const [support, setSupport] = useState<WebGpuSupport>(() => detected ?? "checking");
 
   useEffect(() => {
+    if (detected) return;
     let active = true;
     detection ??= detectWebGpu(navigator as WebGpuNavigator);
     detection.then(supported => {
-      if (active) setSupport(supported ? "supported" : "unsupported");
+      detected = supported ? "supported" : "unsupported";
+      if (active) setSupport(detected);
     });
     return () => {
       active = false;

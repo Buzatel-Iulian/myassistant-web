@@ -84,7 +84,7 @@ function AssistantsList() {
 }
 
 // SkillForge's sidebar, with the user's assistants where SkillForge lists conversations: in MyAssistant you pick
-// an assistant and chat with it, and conversations are not stored.
+// an assistant and chat with it; its conversation is kept in memory for the session, never stored.
 export function AppSidebar() {
   const { pathname } = useLocation();
   const closeOnMobile = useCloseOnMobile();
@@ -97,7 +97,9 @@ export function AppSidebar() {
         <SidebarHeader>
           <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarMenuButton render={<Link to="/chat" />} onClick={closeOnMobile}>
+              {/* The state asks the chat that /chat opens for an empty conversation: conversations are kept per
+                  assistant while the user moves around the app (Phase 12), so opening one is not a new chat. */}
+              <SidebarMenuButton render={<Link to="/chat" state={{ newChat: true }} />} onClick={closeOnMobile}>
                 <Plus />
                 <span>New chat</span>
               </SidebarMenuButton>

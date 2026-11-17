@@ -1,34 +1,43 @@
-import { useEffect, useMemo, useReducer, useState } from "react";
-import { Link, useLocation } from "react-router";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router";
 import { CircleAlert, TriangleAlert } from "lucide-react";
 
 import { AssistantHeader } from "@/components/chat/AssistantHeader";
 import { EngineErrorAlert } from "@/components/chat/EngineErrorAlert";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { EmptyState } from "@/components/chat/EmptyState";
+import { LoadConfirmation } from "@/components/chat/LoadConfirmation";
 import { MessageList } from "@/components/chat/MessageList";
 import { ModelLoader } from "@/components/chat/ModelLoader";
-import { chatReducer, historyForModel, initialChatState, visibleMessages } from "@/components/chat/chatState";
+import { visibleMessages } from "@/components/chat/chatState";
+import { canRetryAlone } from "@/components/chat/loadPlan";
 import { LoadingPage } from "@/components/common/PageState";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useApiQuery } from "@/hooks/useApiQuery";
-import { useEngine, type UseEngine } from "@/hooks/useEngine";
+import { useModel } from "@/hooks/useModel";
 import { getConfiguration } from "@/lib/api/configurations";
-import { contextBudget, estimateTokens, fitToContext, RETRY_BUDGET_SCALE, systemPromptFits } from "@/lib/llm/context";
+import { contextBudget, estimateTokens, systemPromptFits } from "@/lib/llm/context";
+import type { ModelKey } from "@/lib/llm/engine";
 import { systemPromptFor } from "@/lib/llm/prompt";
 import { toChatOptions, type ChatOptions } from "@/lib/llm/settings";
 import type { Configuration } from "@/lib/types";
 import { useAppStore } from "@/store/useAppStore";
 import { useAuthStore } from "@/store/useAuthStore";
+import { EMPTY_CONVERSATION, useConversationStore } from "@/store/useConversationStore";
 
 // One wording for "this message does not fit", whether the estimate saw it before sending or WebLLM refused it
 // (QA-10-1: text denser than the estimate, with no history left to drop).
 const SHORTEN_HINT = "Shorten it, or raise the context window in Edit assistant.";
 
-// The chat reads its assistant once when it opens: an edit made meanwhile applies to the next chat, never to the
-// middle of this one (the model, the window and the prompt stay what the conversation started with).
+// The chat fetches its assistant when it opens, so an edit made meanwhile (another model, window or prompt) applies
+// when the user comes back; nothing else changes it under an open chat.
 const NO_CHANGES = [] as const;
+
+// The sidebar's "New chat" travels in the navigation's state (through `/chat`, which picks the assistant).
+function isNewChatRequest(state: unknown): boolean {
+  return typeof state === "object" && state !== null && (state as { newChat?: unknown }).newChat === true;
+}
 
 function initials(name: string | undefined): string {
   const letters = (name ?? "")
@@ -45,9 +54,9 @@ function Centered({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * The chat with one saved assistant (`/chat/:configId`). It is mounted once per assistant (keyed by its id), so
- * switching assistants starts from nothing: a new fetch, a new load if needed, a new conversation, and whatever the
- * previous assistant was still doing (loading, answering) can only reach the unmounted one.
+ * The chat with one saved assistant (`/chat/:configId`), mounted once per assistant (keyed by its id). What outlives
+ * it is kept outside: the model stays resident in the engine registry and the conversation in the conversation store,
+ * so coming back to an assistant shows its conversation at once, with no load if its model is still in GPU memory.
  */
 export function AssistantChat({ configId }: { configId: string }) {
   const loaded = useApiQuery(
@@ -63,10 +72,14 @@ export function AssistantChat({ configId }: { configId: string }) {
   useEffect(() => {
     if (openedId) setActiveConfigurationId(openedId);
     // Deleted (or another user's id, which the API also answers with 404): do not reopen it next time.
-    else if (notFound && useAppStore.getState().activeConfigurationId === configId) setActiveConfigurationId(null);
+    else if (notFound) {
+      if (useAppStore.getState().activeConfigurationId === configId) setActiveConfigurationId(null);
+      useConversationStore.getState().drop(configId);
+    }
   }, [openedId, notFound, configId, setActiveConfigurationId]);
 
-  if (loaded.status === "loading") return <LoadingPage label="Loading assistant" />;
+  // The local API answers in a few milliseconds: coming back to a chat must not flash a skeleton for that.
+  if (loaded.status === "loading") return <LoadingPage label="Loading assistant" delayMs={400} />;
 
   if (loaded.status === "error") {
     return (
@@ -88,31 +101,43 @@ export function AssistantChat({ configId }: { configId: string }) {
   return <LoadedAssistant configuration={loaded.data} />;
 }
 
-// Owns the model (load, progress, load errors); Conversation owns the messages. They are split so that "New chat"
-// can start an empty conversation (a new key) without touching the model already loaded.
+// Owns the model's state on screen (confirmation, loader, load errors, the header's Reload/Unload); Conversation shows
+// the messages, which live in the conversation store.
 function LoadedAssistant({ configuration }: { configuration: Configuration }) {
-  const engine = useEngine();
-  const { load, status, progress, error } = engine;
   const location = useLocation();
-  const { modelId } = configuration;
+  const navigate = useNavigate();
+  const { id, modelId } = configuration;
   const options = useMemo(() => toChatOptions(configuration.settings), [configuration.settings]);
   const systemPrompt = useMemo(() => systemPromptFor(configuration), [configuration]);
+  const model = useModel(modelId, options.load);
+  const { view, progress, error, residents, load, reload, unload } = model;
+  const conversation = useConversationStore(state => state.conversations[id]) ?? EMPTY_CONVERSATION;
+  const keptMessages = visibleMessages(conversation.chat).length;
 
-  useEffect(() => {
-    void load(modelId, options.load);
-  }, [load, modelId, options.load]);
+  // "New chat" empties this assistant's conversation once per navigation (location.key), before the first paint, so
+  // the previous conversation does not flash; Back to that history entry later does not empty it again.
+  const newChatRequested = isNewChatRequest(location.state);
+  useLayoutEffect(() => {
+    if (newChatRequested && conversation.startedBy !== location.key) {
+      useConversationStore.getState().newChat(id, location.key);
+    }
+  }, [newChatRequested, conversation.startedBy, location.key, id]);
+
+  // Back goes where the user came from in the app; the first page of the tab (a link, the page after login) has nothing
+  // before it in the app, so it goes to the assistants. `idx` is React Router's position in its own history.
+  const goBack = () => {
+    const index = (window.history.state as { idx?: unknown } | null)?.idx;
+    void (typeof index === "number" && index > 0 ? navigate(-1) : navigate("/assistants"));
+  };
 
   let body: React.ReactNode;
-  if (status === "idle") {
-    // One frame before the load effect runs; empty instead of a loader, which would flash for a model already loaded.
-    body = null;
-  } else if (status === "loading") {
+  if (view === "loading") {
     body = (
       <Centered>
         <ModelLoader modelId={modelId} progress={progress} />
       </Centered>
     );
-  } else if (status === "error" && error) {
+  } else if (view === "error" && error) {
     body = (
       <Centered>
         <EngineErrorAlert
@@ -121,7 +146,12 @@ function LoadedAssistant({ configuration }: { configuration: Configuration }) {
           className="max-w-xl"
           actions={
             <>
-              <Button variant="outline" size="sm" onClick={() => void load(modelId, options.load)}>
+              {canRetryAlone(error, model.key, residents) && (
+                <Button variant="outline" size="sm" onClick={() => void load("replace")}>
+                  Unload other models and try again
+                </Button>
+              )}
+              <Button variant="outline" size="sm" onClick={() => void load("alongside")}>
                 Try again
               </Button>
               <Button variant="outline" size="sm" render={<Link to={`/assistants/${configuration.id}`} />}>
@@ -132,83 +162,82 @@ function LoadedAssistant({ configuration }: { configuration: Configuration }) {
         />
       </Centered>
     );
-  } else {
-    // location.key changes on every navigation, also to the same URL, which is what the sidebar's "New chat" does.
+  } else if (view === "confirm") {
     body = (
-      <Conversation
-        key={location.key}
-        engine={engine}
-        configuration={configuration}
-        systemPrompt={systemPrompt}
-        options={options}
-      />
+      <Centered>
+        <LoadConfirmation
+          modelId={modelId}
+          modelKey={model.key}
+          contextWindowSize={configuration.settings.contextWindowSize}
+          residents={residents}
+          keptMessages={keptMessages}
+          onLoad={mode => void load(mode)}
+          onBack={goBack}
+        />
+      </Centered>
+    );
+  } else {
+    body = (
+      <Conversation configuration={configuration} systemPrompt={systemPrompt} options={options} modelKey={model.key} />
     );
   }
 
   return (
     <>
-      <AssistantHeader configuration={configuration} />
+      <AssistantHeader
+        configuration={configuration}
+        model={{
+          view,
+          residentCount: residents.length,
+          answering: conversation.chat.isAnswering,
+          onReload: () => void reload(),
+          onUnload: () => void unload()
+        }}
+      />
       {body}
     </>
   );
 }
 
 interface ConversationProps {
-  engine: UseEngine;
   configuration: Configuration;
   systemPrompt: string;
   options: ChatOptions;
+  modelKey: ModelKey;
 }
 
-interface ContextNote {
-  dropped: number;
-  systemPromptTruncated: boolean;
-}
-
-function Conversation({ engine, configuration, systemPrompt, options }: ConversationProps) {
-  const { send, stop, status, error } = engine;
-  const { settings } = configuration;
-  const [state, dispatch] = useReducer(chatReducer, systemPrompt, initialChatState);
+function Conversation({ configuration, systemPrompt, options, modelKey }: ConversationProps) {
+  const { id, settings } = configuration;
+  const conversation = useConversationStore(state => state.conversations[id]) ?? EMPTY_CONVERSATION;
+  const send = useConversationStore(state => state.send);
+  const stopAnswer = useConversationStore(state => state.stop);
+  const { chat, contextNote, error } = conversation;
   const [draft, setDraft] = useState("");
   const [tooLong, setTooLong] = useState<string | null>(null);
-  const [contextNote, setContextNote] = useState<ContextNote>({ dropped: 0, systemPromptTruncated: false });
   const userName = useAuthStore(store => store.user?.displayName);
-  const messages = visibleMessages(state);
-  const isAnswering = state.isAnswering || status === "generating";
+  const messages = visibleMessages(chat);
+  const isAnswering = chat.isAnswering;
   const budget = contextBudget(settings);
   const promptTooLarge = !systemPromptFits(systemPrompt, settings) || contextNote.systemPromptTruncated;
 
-  // Leaving the page (or starting a new chat, or switching assistants) must not leave the GPU busy with an answer
-  // nobody will see.
-  useEffect(() => () => stop(), [stop]);
+  // Leaving the chat does not stop its answer any more (Phase 12): it keeps streaming into the conversation store.
 
   async function handleSend() {
-    const action = { type: "send", text: draft } as const;
-    const next = chatReducer(state, action);
-    if (next === state || isAnswering) return;
-    const history = historyForModel(next);
-    const fit = fitToContext(history, settings);
-    if (!fit.ok) {
+    const text = draft;
+    const outcome = send(id, { text, systemPrompt, settings, params: options.request, modelKey });
+    if (outcome.status === "ignored") return;
+    if (outcome.status === "tooLong") {
       setTooLong(
-        `This message is about ${fit.messageTokens} tokens, and at most ${fit.budget} fit in this assistant's context ` +
-          `window next to its answer. ${SHORTEN_HINT}`
+        `This message is about ${outcome.messageTokens} tokens, and at most ${outcome.budget} fit in this assistant's ` +
+          `context window next to its answer. ${SHORTEN_HINT}`
       );
       return;
     }
-    const retry = fitToContext(history, settings, RETRY_BUDGET_SCALE);
     setTooLong(null);
-    setContextNote({ dropped: fit.dropped, systemPromptTruncated: fit.systemPromptTruncated });
-    dispatch(action);
     setDraft("");
-    const failure = await send(
-      { messages: fit.messages, params: options.request, retryMessages: retry.ok ? retry.messages : undefined },
-      text => dispatch({ type: "appendAnswer", text })
-    );
-    dispatch({ type: "finishAnswer" });
-    if (failure?.kind === "contextOverflow") {
+    if ((await outcome.answer) === "overflow") {
       // Refused before the first token: the message goes back to the composer to be shortened.
-      dispatch({ type: "withdraw" });
-      setDraft(current => current || action.text);
+      setDraft(current => current || text);
       setTooLong(
         `This message has more tokens than the estimate allowed for, and it does not fit in this assistant's context window next to its answer. ${SHORTEN_HINT}`
       );
@@ -266,7 +295,7 @@ function Conversation({ engine, configuration, systemPrompt, options }: Conversa
         setTooLong(null);
       }}
       onSend={() => void handleSend()}
-      onStop={stop}
+      onStop={() => stopAnswer(id)}
       isAnswering={isAnswering}
     />
   );
@@ -285,7 +314,7 @@ function Conversation({ engine, configuration, systemPrompt, options }: Conversa
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <MessageList messages={messages} userInitials={initials(userName)} isAnswering={state.isAnswering} />
+      <MessageList messages={messages} userInitials={initials(userName)} isAnswering={isAnswering} />
       <div className="flex flex-col gap-3 border-t p-4">
         {notices}
         {input}

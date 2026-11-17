@@ -1,4 +1,4 @@
-import { Link, Navigate, useParams } from "react-router";
+import { Link, Navigate, useLocation, useParams } from "react-router";
 import { Bot, CircleAlert, Plus } from "lucide-react";
 
 import { AssistantChat } from "@/components/chat/Chat";
@@ -14,6 +14,7 @@ import { useAppStore } from "@/store/useAppStore";
 function OpenAssistant() {
   const result = useConfigurations();
   const lastUsedId = useAppStore(state => state.activeConfigurationId);
+  const location = useLocation();
 
   if (result.status === "loading") return <LoadingPage label="Loading your assistants" />;
   if (result.status === "error")
@@ -37,8 +38,9 @@ function OpenAssistant() {
       </div>
     );
   }
-  // The chat stores the id it opens, so a last-used id that is no longer in the list is replaced right away.
-  return <Navigate to={`/chat/${assistant.id}`} replace />;
+  // The chat stores the id it opens, so a last-used id that is no longer in the list is replaced right away. The
+  // state goes along: the sidebar's "New chat" asks the chat it opens for an empty conversation.
+  return <Navigate to={`/chat/${assistant.id}`} replace state={location.state} />;
 }
 
 // `/chat/:configId` chats with that assistant; `/chat` opens the one `pickAssistant` chooses.
@@ -71,6 +73,6 @@ export function ChatPage() {
   }
 
   if (!configId) return <OpenAssistant />;
-  // Keyed by the id: another assistant is a new chat from scratch (fetch, model, conversation), never a carry-over.
+  // Keyed by the id: another assistant is another chat; its model and conversation are kept outside the component.
   return <AssistantChat key={configId} configId={configId} />;
 }

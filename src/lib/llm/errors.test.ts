@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { describeEngineError, engineErrorKind, errorText, shortDetails } from "@/lib/llm/errors";
+import { describeEngineError, engineErrorKind, errorText, shortDetails, toFailure } from "@/lib/llm/errors";
 
 // The texts below are what WebLLM 0.2.88 and Chrome produce; a failure in the worker reaches the page as a string.
 const DEVICE_LOST =
@@ -88,5 +88,24 @@ describe("error text helpers", () => {
     expect(shortDetails("    at a (b.js:1:1)\n    at c")).toBeNull();
     expect(shortDetails("x".repeat(500))?.length).toBe(240);
     expect(shortDetails("")).toBeNull();
+  });
+});
+
+describe("toFailure (QA-8-1)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("logs the raw cause the worker sends as a string, and keeps its first line as the details", () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const failure = toFailure("TypeError: Failed to fetch", "load");
+    expect(failure.kind).toBe("download");
+    expect(failure.details).toBe("TypeError: Failed to fetch");
+    expect(log).toHaveBeenCalledWith("Local model error (load):", "TypeError: Failed to fetch");
+  });
+
+  it("falls back to a readable message when there is no cause", () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const failure = toFailure({}, "answer");
+    expect(failure.title).toBe("The answer could not be generated");
+    expect(failure.details).toBeNull();
   });
 });

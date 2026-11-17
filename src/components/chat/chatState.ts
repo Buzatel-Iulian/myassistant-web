@@ -62,3 +62,14 @@ export function historyForModel(state: ChatState): ChatMessage[] {
 export function visibleMessages(state: ChatState): ChatMessage[] {
   return state.messages.filter(message => message.role !== "system");
 }
+
+/**
+ * The conversation with `systemPrompt` as its first message. A kept conversation is sent with the assistant's current
+ * prompt: an edit of its template or variables applies from the next message on (Phase 12).
+ */
+export function withSystemPrompt(state: ChatState, systemPrompt: string): ChatState {
+  const first = state.messages[0];
+  if (first?.role === "system" && first.content === systemPrompt) return state;
+  const rest = first?.role === "system" ? state.messages.slice(1) : state.messages;
+  return { ...state, messages: [{ role: "system", content: systemPrompt }, ...rest] };
+}

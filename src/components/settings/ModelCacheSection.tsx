@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
-import { HardDrive, RefreshCw, Trash2 } from "lucide-react";
+import { Cpu, HardDrive, PowerOff, RefreshCw, Trash2 } from "lucide-react";
 import { toast } from "@/lib/toast";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useResidentModels } from "@/hooks/useResidentModels";
 import { formatBytes } from "@/lib/llm/cache";
-import { deleteCachedModel, listCachedModels, type CachedModel } from "@/lib/llm/engine";
+import {
+  deleteCachedModel,
+  listCachedModels,
+  listPrebuiltModels,
+  unloadModel,
+  type CachedModel,
+  type ResidentModel
+} from "@/lib/llm/engine";
 import { formatVram } from "@/lib/llm/models";
 
 type CacheState =
@@ -26,12 +35,85 @@ async function readCache(): Promise<{ models: CachedModel[]; usedBytes: number |
   return { models, usedBytes: estimate?.usage ?? null };
 }
 
+// The models in GPU memory right now (Phase 12), with their estimate and an Unload button each. A resident model
+// whose files were deleted from the cache is listed here too: it keeps answering until it is unloaded.
+function ResidentModelsList() {
+  const residents = useResidentModels();
+  const [vram, setVram] = useState<ReadonlyMap<string, number | null>>(new Map());
+  const [unloading, setUnloading] = useState<ReadonlySet<string>>(new Set());
+
+  useEffect(() => {
+    let active = true;
+    listPrebuiltModels()
+      .then(models => active && setVram(new Map(models.map(model => [model.id, model.vramRequiredMB]))))
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function handleUnload(model: ResidentModel) {
+    setUnloading(current => new Set(current).add(model.key));
+    await unloadModel(model.key);
+    setUnloading(current => {
+      const next = new Set(current);
+      next.delete(model.key);
+      return next;
+    });
+    toast.success(`Unloaded ${model.modelId}. Its chats ask before loading it again.`);
+  }
+
+  const total = residents.reduce((sum, model) => sum + (vram.get(model.modelId) ?? 0), 0);
+  return (
+    <div className="flex flex-col gap-2" data-testid="resident-models">
+      <h3 className="text-sm font-medium">In GPU memory</h3>
+      {residents.length === 0 ? (
+        <p className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground" data-testid="resident-empty">
+          No model is loaded. A chat asks before it loads its assistant&apos;s model.
+        </p>
+      ) : (
+        <>
+          <ul className="flex flex-col divide-y rounded-lg border">
+            {residents.map(model => (
+              <li key={model.key} className="flex flex-wrap items-center gap-3 p-3" data-testid="resident-model">
+                <Cpu className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <p className="font-mono text-xs break-all">{model.modelId}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {model.status === "loading" ? "Loading · " : ""}
+                    {model.contextWindowSize === null ? "default" : model.contextWindowSize.toLocaleString("en-US")}
+                    -token window · {formatVram(vram.get(model.modelId) ?? null)}
+                  </p>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={unloading.has(model.key)}
+                  onClick={() => void handleUnload(model)}
+                  aria-label={`Unload ${model.modelId}`}
+                >
+                  <PowerOff /> Unload
+                </Button>
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs text-muted-foreground" data-testid="resident-total">
+            About {formatVram(total)} in total (WebLLM&apos;s estimates).
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 // The models this browser has downloaded, read from WebLLM's cache through engine.ts (the only WebLLM user). It is
 // the user's way to get disk space back, and to force a fresh download of a model whose files went bad.
 export function ModelCacheSection() {
   const [state, setState] = useState<CacheState>({ status: "loading" });
   const [toDelete, setToDelete] = useState<CachedModel | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const residents = useResidentModels();
+  const residentIds = new Set(residents.map(model => model.modelId));
 
   const refresh = useCallback(async () => {
     try {
@@ -82,6 +164,10 @@ export function ModelCacheSection() {
         </p>
       </div>
 
+      <ResidentModelsList />
+
+      <h3 className="text-sm font-medium">Downloaded</h3>
+
       {state.status === "loading" && (
         <div className="flex flex-col gap-2" aria-busy="true" aria-label="Reading the model cache">
           <Skeleton className="h-12 w-full" />
@@ -107,7 +193,14 @@ export function ModelCacheSection() {
             <li key={model.id} className="flex flex-wrap items-center gap-3 p-3" data-testid="cached-model">
               <HardDrive className="size-4 shrink-0 text-muted-foreground" aria-hidden />
               <div className="min-w-0 flex-1">
-                <p className="font-mono text-xs break-all">{model.id}</p>
+                <p className="flex flex-wrap items-center gap-2">
+                  <span className="font-mono text-xs break-all">{model.id}</span>
+                  {residentIds.has(model.id) && (
+                    <Badge variant="secondary" data-testid="cached-model-loaded">
+                      <Cpu /> Loaded
+                    </Badge>
+                  )}
+                </p>
                 <p className="text-xs text-muted-foreground">
                   <span data-testid="cached-model-size">{formatBytes(model.sizeBytes)}</span> on disk ·{" "}
                   {formatVram(model.vramRequiredMB)}
@@ -136,7 +229,13 @@ export function ModelCacheSection() {
         open={toDelete !== null}
         onOpenChange={open => !open && setToDelete(null)}
         title="Delete this model from the cache?"
-        description={`${toDelete?.id ?? ""} (${formatBytes(toDelete?.sizeBytes ?? null)}) is removed from this browser. The next chat that uses it downloads it again. Assistants that use it are not changed.`}
+        description={
+          `${toDelete?.id ?? ""} (${formatBytes(toDelete?.sizeBytes ?? null)}) is removed from this browser. The next ` +
+          "chat that uses it downloads it again. Assistants that use it are not changed." +
+          (toDelete && residentIds.has(toDelete.id)
+            ? " It is loaded in GPU memory: it keeps answering until you unload it."
+            : "")
+        }
         confirmLabel="Delete model"
         busy={deleting}
         onConfirm={() => void handleDelete()}

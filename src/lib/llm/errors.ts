@@ -143,3 +143,12 @@ export function describeEngineError(error: unknown, action: EngineAction, online
       };
   }
 }
+
+// A failure inside the worker crosses to the page as a plain string ("TypeError: Failed to fetch"), not an Error
+// (QA-8-1). The raw value goes to the console so it can be diagnosed; the user gets what it means and what to do.
+// Not pure like the rest of this file (it logs and reads navigator.onLine): the one place both the model hook and the
+// conversation store turn a thrown value into an EngineFailure.
+export function toFailure(error: unknown, action: EngineAction): EngineFailure {
+  console.error(`Local model error (${action}):`, error);
+  return describeEngineError(error, action, typeof navigator === "undefined" ? true : navigator.onLine);
+}

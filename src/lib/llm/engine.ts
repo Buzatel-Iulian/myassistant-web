@@ -31,38 +31,11 @@ export interface LoadProgress {
   stage: LoadStage;
 }
 
-export type ProgressListener = (progress: LoadProgress) => void;
-
 export function toLoadProgress(report: InitProgressReport): LoadProgress {
   const value = Number.isFinite(report.progress) ? Math.min(1, Math.max(0, report.progress)) : 0;
   const text = report.text.trim();
   return { value, text, stage: loadStage(text) };
 }
-
-// One engine (and one worker) for the whole app: a second one would load a second copy of the weights into GPU memory.
-let engine: WebWorkerMLCEngine | null = null;
-let engineCreation: Promise<WebWorkerMLCEngine> | null = null;
-let loadedModelId: string | null = null;
-// The model and the load options it was loaded with: the same model with another context window is another load.
-let loadedKey: string | null = null;
-// Loads run one after another: WebLLM's reload() is not safe to call while another reload is still running.
-let loadQueue: Promise<void> = Promise.resolve();
-let pendingLoad: { key: string; promise: Promise<void> } | null = null;
-// The key of the latest loadModel() call. A queued load that a newer call replaced before it started is skipped:
-// a user who clicks through three assistants waits for one load, not three.
-let wantedKey: string | null = null;
-// Only the latest caller of loadModel() receives progress; the engine keeps a single callback.
-let progressListener: ProgressListener | null = null;
-
-// Each answer being streamed has its own stop flag, so a new answer (another assistant's chat) cannot clear the stop
-// asked for an older one that is still draining. `generating` settles when no answer is running: a reload waits for
-// it, because unloading the model under a running generation would fail inside the worker.
-interface ActiveStream {
-  stopped: boolean;
-}
-const activeStreams = new Set<ActiveStream>();
-let generationsDone: Promise<void> = Promise.resolve();
-let endGenerations: (() => void) | null = null;
 
 type WebLlm = typeof import("@mlc-ai/web-llm");
 let webLlm: Promise<WebLlm> | null = null;
@@ -78,91 +51,303 @@ function importWebLlm(): Promise<WebLlm> {
   return webLlm;
 }
 
-function getEngine(): Promise<WebWorkerMLCEngine> {
-  engineCreation ??= importWebLlm().then(
-    ({ WebWorkerMLCEngine }) => {
-      // Built without a model (instead of CreateWebWorkerMLCEngine) so that every load, including the first, goes
-      // through the same queue below.
-      engine = new WebWorkerMLCEngine(new Worker(new URL("./worker.ts", import.meta.url), { type: "module" }), {
-        initProgressCallback: report => progressListener?.(toLoadProgress(report))
-      });
-      return engine;
-    },
-    (error: unknown) => {
-      engineCreation = null;
-      throw error;
-    }
-  );
-  return engineCreation;
-}
+// --- The resident models (Phase 12): one engine, with its own worker, per loaded model + load options. ---
+//
+// A model stays in GPU memory until the user unloads or replaces it, so going back to an assistant whose model is
+// loaded is instant. Each loaded key has its own WebWorkerMLCEngine: one engine holds one model, and two engines never
+// hold the same key (two assistants with the same model and context window share it). Unloading a key calls the
+// engine's unload() and terminates its worker, which is what gives the GPU memory back.
 
-export function getLoadedModelId(): string | null {
-  return loadedModelId;
-}
+/** What identifies a loaded model: the model and its load options (another context window is another copy). */
+export type ModelKey = string;
 
-function loadKey(modelId: string, options?: LoadOptions): string {
+export function modelKey(modelId: string, options?: LoadOptions): ModelKey {
   return `${modelId}|${options?.context_window_size ?? ""}|${options?.sliding_window_size ?? ""}`;
 }
 
-/** Whether `modelId` is loaded with these options, so a chat can start without showing the loader. */
-export function isModelLoaded(modelId: string, options?: LoadOptions): boolean {
-  return !pendingLoad && loadedKey === loadKey(modelId, options);
+export type ResidentStatus = "loading" | "ready";
+
+/** A model in GPU memory, or on its way there. */
+export interface ResidentModel {
+  key: ModelKey;
+  modelId: string;
+  /** The context window it was loaded with; null for WebLLM's default. */
+  contextWindowSize: number | null;
+  status: ResidentStatus;
+}
+
+interface ActiveStream {
+  stopped: boolean;
+}
+
+interface Slot {
+  key: ModelKey;
+  modelId: string;
+  options: LoadOptions | undefined;
+  status: ResidentStatus;
+  worker: Worker | null;
+  engine: WebWorkerMLCEngine | null;
+  /** The load (or reload) in progress or queued; shared by every caller that asks for this key meanwhile. */
+  load: Promise<void> | null;
+  /** True while WebLLM's reload() runs: an engine in the middle of a reload is terminated, never unload()ed. */
+  reloading: boolean;
+  /** Abandons the running reload() (the slot was unloaded during it), so the load queue moves on. */
+  cancel: (() => void) | null;
+  /** Unloaded (or failed): every step of a queued load checks it, and a stale load ends without loading. */
+  removed: boolean;
+  /** The latest progress report of its load; null when not loading or nothing reported yet. */
+  progress: LoadProgress | null;
+  // Each answer has its own stop flag, so a new answer cannot clear the stop asked for an older one still draining.
+  streams: Set<ActiveStream>;
+  // Answers on one engine run one after another: WebLLM's interruptGenerate() stops whichever is running, so Stop in
+  // one chat must never land on another chat's answer that shares the engine.
+  generationTurn: Promise<void>;
+  // Settles when no answer is running on this engine: a reload or an unload waits for it, because unloading the model
+  // under a running generation would fail inside the worker.
+  idle: Promise<void>;
+  endIdle: (() => void) | null;
+}
+
+const slots = new Map<ModelKey, Slot>();
+// One load at a time for the whole app, even across engines: WebLLM's reload() is not safe to call twice on one
+// engine, and two downloads plus two GPU uploads at once would make the memory peak of a load worse.
+let loadQueue: Promise<void> = Promise.resolve();
+// How long an unload waits for the worker to answer before it is terminated anyway (a worker whose GPU device was
+// lost may never answer).
+const UNLOAD_TIMEOUT_MS = 5000;
+
+const residentListeners = new Set<() => void>();
+const progressListeners = new Set<() => void>();
+let residentSnapshot: readonly ResidentModel[] = [];
+
+function publishResidents(): void {
+  residentSnapshot = [...slots.values()].map(slot => ({
+    key: slot.key,
+    modelId: slot.modelId,
+    contextWindowSize: slot.options?.context_window_size ?? null,
+    status: slot.status
+  }));
+  for (const listener of residentListeners) listener();
+}
+
+/** The models loaded or loading, in the order they were asked for. A new array after every change. */
+export function getResidentModels(): readonly ResidentModel[] {
+  return residentSnapshot;
+}
+
+/** Calls `listener` after every change of the resident models (for `useSyncExternalStore`). */
+export function subscribeResidentModels(listener: () => void): () => void {
+  residentListeners.add(listener);
+  return () => residentListeners.delete(listener);
+}
+
+/** The latest progress of the load of `key`, or null when it is not loading or has not reported yet. */
+export function getLoadProgress(key: ModelKey): LoadProgress | null {
+  const slot = slots.get(key);
+  return slot?.status === "loading" ? slot.progress : null;
 }
 
 /**
- * Loads `modelId` with `options` into the engine, downloading it on first use (later loads come from the browser
- * cache). The same model with the same options already loaded resolves at once; the same load already running is
- * shared; anything else waits for the current load and for any running answer to end, then replaces the model.
- * The same model with another context window is loaded again (from the cache): WebLLM sizes its KV cache at load.
+ * Calls `listener` after every progress report of any load (for `useSyncExternalStore` with `getLoadProgress`). One
+ * subscription for all keys, so a chat that subscribed before its load started (the confirmation) hears it too.
  */
-export function loadModel(modelId: string, onProgress: ProgressListener, options?: LoadOptions): Promise<void> {
-  const key = loadKey(modelId, options);
-  progressListener = onProgress;
-  wantedKey = key;
-  if (pendingLoad?.key === key) return pendingLoad.promise;
-  if (!pendingLoad && loadedKey === key) return Promise.resolve();
-
-  const promise = loadQueue.then(async () => {
-    if (loadedKey === key || wantedKey !== key) return;
-    await generationsDone;
-    loadedModelId = null;
-    loadedKey = null;
-    await (await getEngine()).reload(modelId, options);
-    loadedModelId = modelId;
-    loadedKey = key;
-  });
-  const settled = () => {
-    if (pendingLoad?.promise === promise) pendingLoad = null;
-  };
-  pendingLoad = { key, promise };
-  // A failed load must not block the next one, and a retry must start a fresh load.
-  loadQueue = promise.then(settled, settled);
-  return promise;
+export function subscribeLoadProgress(listener: () => void): () => void {
+  progressListeners.add(listener);
+  return () => progressListeners.delete(listener);
 }
 
-function startGeneration(): ActiveStream {
-  if (activeStreams.size === 0) generationsDone = new Promise(resolve => (endGenerations = resolve));
+function newSlot(modelId: string, options: LoadOptions | undefined): Slot {
+  return {
+    key: modelKey(modelId, options),
+    modelId,
+    options,
+    status: "loading",
+    worker: null,
+    engine: null,
+    load: null,
+    reloading: false,
+    cancel: null,
+    removed: false,
+    progress: null,
+    streams: new Set(),
+    generationTurn: Promise.resolve(),
+    idle: Promise.resolve(),
+    endIdle: null
+  };
+}
+
+function forget(slot: Slot): void {
+  slot.removed = true;
+  if (slots.get(slot.key) === slot) slots.delete(slot.key);
+  publishResidents();
+}
+
+// Frees the GPU memory of the slot's engine: unload() asks WebLLM to release the model, terminating the worker drops
+// whatever is left (the WebGPU device dies with it). A reload cut short is only terminated: unload() would run under it.
+async function dispose(slot: Slot, graceful: boolean): Promise<void> {
+  const { engine, worker } = slot;
+  slot.engine = null;
+  slot.worker = null;
+  if (engine && graceful) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<void>(resolve => (timer = setTimeout(resolve, UNLOAD_TIMEOUT_MS)));
+    await Promise.race([engine.unload().catch(() => undefined), timeout]);
+    clearTimeout(timer);
+  }
+  worker?.terminate();
+}
+
+const CANCELLED = new Error("The load was cancelled.");
+
+function queueLoad(slot: Slot): Promise<void> {
+  slot.status = "loading";
+  slot.progress = null;
+  publishResidents();
+  const run = loadQueue.then(async () => {
+    try {
+      // A load whose model was unloaded before its turn came is stale: it is skipped, nothing is loaded.
+      if (slot.removed) return;
+      // A reload of this engine waits for its running answers.
+      await slot.idle;
+      if (slot.removed) return;
+      // Reloading a resident key: the old copy leaves GPU memory before the new one comes in.
+      await dispose(slot, true);
+      const { WebWorkerMLCEngine } = await importWebLlm();
+      if (slot.removed) return;
+      // Built without a model (instead of CreateWebWorkerMLCEngine) so that every load goes through this queue.
+      const worker = new Worker(new URL("./worker.ts", import.meta.url), { type: "module" });
+      const engine = new WebWorkerMLCEngine(worker, {
+        initProgressCallback: report => {
+          if (slot.removed) return;
+          slot.progress = toLoadProgress(report);
+          for (const listener of progressListeners) listener();
+        }
+      });
+      slot.worker = worker;
+      slot.engine = engine;
+      slot.reloading = true;
+      const cancelled = new Promise<never>((_, reject) => (slot.cancel = () => reject(CANCELLED)));
+      try {
+        await Promise.race([engine.reload(slot.modelId, slot.options), cancelled]);
+      } finally {
+        slot.reloading = false;
+        slot.cancel = null;
+      }
+      if (slot.removed) return;
+      slot.status = "ready";
+      slot.progress = null;
+      publishResidents();
+    } catch (error) {
+      // Unloaded during the load: the user asked for it, it is not a failure.
+      if (slot.removed) return;
+      // A failed load leaves nothing resident (its worker may hold half a model), and the next attempt starts fresh.
+      forget(slot);
+      await dispose(slot, false);
+      throw error;
+    }
+  });
+  slot.load = run;
+  const settled = () => {
+    if (slot.load === run) slot.load = null;
+  };
+  // A failed load must not block the next one.
+  loadQueue = run.then(settled, settled);
+  return run;
+}
+
+/** Whether `modelId` is loaded with these options and ready to answer. */
+export function isModelLoaded(modelId: string, options?: LoadOptions): boolean {
+  return slots.get(modelKey(modelId, options))?.status === "ready";
+}
+
+/**
+ * Loads `modelId` with `options` into an engine of its own, downloading it on first use (later loads come from the
+ * browser cache), and keeps it resident next to the models already loaded. The same key already loaded resolves at
+ * once; the same key loading shares that load. Loads run one at a time. Resolves without loading when the key was
+ * unloaded before its load ended (check `isModelLoaded`); rejects when the load failed.
+ */
+export function loadModel(modelId: string, options?: LoadOptions): Promise<void> {
+  const existing = slots.get(modelKey(modelId, options));
+  if (existing) return existing.load ?? Promise.resolve();
+  const slot = newSlot(modelId, options);
+  slots.set(slot.key, slot);
+  return queueLoad(slot);
+}
+
+/**
+ * Loads a resident key again from the browser cache in a fresh engine: the old one is unloaded and its worker
+ * terminated first. Waits for the answers running on it. A key that is not resident is not loaded (resolves).
+ */
+export function reloadModel(key: ModelKey): Promise<void> {
+  const slot = slots.get(key);
+  if (!slot) return Promise.resolve();
+  return slot.load ?? queueLoad(slot);
+}
+
+/**
+ * Frees the GPU memory of `key`: its answers are stopped, a queued load is dropped, a running load is abandoned, then
+ * the engine is unloaded and its worker terminated. Resolves once that is done.
+ */
+export async function unloadModel(key: ModelKey): Promise<void> {
+  const slot = slots.get(key);
+  if (!slot) return;
+  forget(slot);
+  for (const stream of slot.streams) stream.stopped = true;
+  slot.engine?.interruptGenerate();
+  const wasReloading = slot.reloading;
+  slot.cancel?.();
+  await slot.idle;
+  await dispose(slot, !wasReloading);
+}
+
+/** Unloads every resident model except `keep` (Replace loaded models, logout). */
+export async function unloadAllModels(keep?: ModelKey): Promise<void> {
+  await Promise.all([...slots.keys()].filter(key => key !== keep).map(key => unloadModel(key)));
+}
+
+function startGeneration(slot: Slot): ActiveStream {
+  if (slot.streams.size === 0) slot.idle = new Promise(resolve => (slot.endIdle = resolve));
   const stream = { stopped: false };
-  activeStreams.add(stream);
+  slot.streams.add(stream);
   return stream;
 }
 
-function endGeneration(stream: ActiveStream): void {
-  activeStreams.delete(stream);
-  if (activeStreams.size === 0) {
-    endGenerations?.();
-    endGenerations = null;
+function endGeneration(slot: Slot, stream: ActiveStream): void {
+  slot.streams.delete(stream);
+  if (slot.streams.size === 0) {
+    slot.endIdle?.();
+    slot.endIdle = null;
   }
 }
 
 /**
- * Streams the assistant's answer to `messages`, one text delta at a time. `params` are the per-request sampling
- * settings (temperature, top-p, max tokens, penalties).
+ * Streams the answer of the model loaded as `key` to `messages`, one text delta at a time. `params` are the
+ * per-request sampling settings. Aborting `signal` stops this answer only (the Stop button); the stream then ends
+ * normally. Answers on the same engine run one after another.
  */
-export async function* streamChat(messages: ChatMessage[], params: GenerationParams = {}): AsyncGenerator<string> {
-  if (!engine || loadedModelId === null) throw new Error("No model is loaded yet.");
-  const stream = startGeneration();
+export async function* streamChat(
+  key: ModelKey,
+  messages: ChatMessage[],
+  params: GenerationParams = {},
+  signal?: AbortSignal
+): AsyncGenerator<string> {
+  const slot = slots.get(key);
+  if (!slot || slot.status !== "ready" || !slot.engine) throw new Error("No model is loaded yet.");
+  const stream = startGeneration(slot);
+  const previous = slot.generationTurn;
+  let release: () => void = () => undefined;
+  slot.generationTurn = new Promise(resolve => (release = resolve));
+  let running = false;
+  const onAbort = () => {
+    stream.stopped = true;
+    if (running) slot.engine?.interruptGenerate();
+  };
+  signal?.addEventListener("abort", onAbort);
   try {
+    await previous;
+    const engine = slot.engine;
+    if (stream.stopped || signal?.aborted || slot.removed || !engine) return;
+    running = true;
     const chunks = await engine.chat.completions.create({ ...params, messages, stream: true });
     for await (const chunk of chunks) {
       if (stream.stopped) {
@@ -175,14 +360,10 @@ export async function* streamChat(messages: ChatMessage[], params: GenerationPar
       if (text) yield text;
     }
   } finally {
-    endGeneration(stream);
+    signal?.removeEventListener("abort", onAbort);
+    release();
+    endGeneration(slot, stream);
   }
-}
-
-/** Interrupts the answer being generated (the Stop button). The stream then ends normally. */
-export function stop(): void {
-  for (const stream of activeStreams) stream.stopped = true;
-  engine?.interruptGenerate();
 }
 
 // --- The model catalogue (the model picker, Phase 9). Here too, because only this module talks to WebLLM. ---
@@ -279,15 +460,15 @@ export async function getModelWeightsSize(modelId: string): Promise<number | nul
   }
 }
 
-/** Whether `modelId` is being loaded right now (its files may be downloading). */
+/** Whether `modelId` is being loaded right now, with any options (its files may be downloading). */
 export function isModelLoading(modelId: string): boolean {
-  return pendingLoad !== null && pendingLoad.key.startsWith(`${modelId}|`);
+  return [...slots.values()].some(slot => slot.modelId === modelId && slot.status === "loading");
 }
 
 /**
  * Deletes everything WebLLM cached for `modelId` (weights, tokenizer, config, wasm), so its next load downloads it
- * again. A model being loaded is refused: its download would write the files back half-way. A model already loaded
- * stays in GPU memory for the open chat; the deletion applies from its next load.
+ * again. A model being loaded is refused: its download would write the files back half-way. A resident model stays in
+ * GPU memory and keeps answering until it is unloaded; the deletion applies from its next load (Phase 12 decision).
  */
 export async function deleteCachedModel(modelId: string): Promise<void> {
   if (isModelLoading(modelId)) throw new Error("This model is loading right now. Delete it once the load has ended.");
