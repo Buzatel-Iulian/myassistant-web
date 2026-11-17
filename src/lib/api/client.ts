@@ -12,14 +12,23 @@ export class ApiError extends Error {
   readonly title: string;
   readonly detail: string;
   readonly fieldErrors: Record<string, string>;
+  // The whole problem body, for the members some answers add (`unknownPlaceholders`, `configurations`, ...).
+  readonly problem: ProblemDetail;
 
-  constructor(status: number, title: string, detail: string, fieldErrors: Record<string, string> = {}) {
+  constructor(
+    status: number,
+    title: string,
+    detail: string,
+    fieldErrors: Record<string, string> = {},
+    problem: ProblemDetail = {}
+  ) {
     super(detail);
     this.name = "ApiError";
     this.status = status;
     this.title = title;
     this.detail = detail;
     this.fieldErrors = fieldErrors;
+    this.problem = problem;
   }
 }
 
@@ -39,7 +48,8 @@ async function toApiError(response: Response): Promise<ApiError> {
       problem.status ?? response.status,
       problem.title ?? response.statusText,
       problem.detail ?? UNEXPECTED_ANSWER,
-      problem.fieldErrors ?? {}
+      problem.fieldErrors ?? {},
+      problem
     );
   }
   // Not from the API: nginx answers 502/504 with an HTML page when the API container is down, and the Vite proxy a

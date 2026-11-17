@@ -2,10 +2,12 @@ import { createBrowserRouter, Navigate } from "react-router";
 
 import { AppLayout } from "@/components/layout/AppLayout";
 import { RequireAuth } from "@/components/layout/RequireAuth";
+import { AssistantEditPage } from "@/pages/AssistantEditPage";
 import { AssistantsPage } from "@/pages/AssistantsPage";
 import { ChatPage } from "@/pages/ChatPage";
 import { LoginPage } from "@/pages/LoginPage";
 import { RegisterPage } from "@/pages/RegisterPage";
+import { TemplateEditPage } from "@/pages/TemplateEditPage";
 import { TemplatesPage } from "@/pages/TemplatesPage";
 
 export const router = createBrowserRouter([
@@ -20,7 +22,10 @@ export const router = createBrowserRouter([
           { index: true, element: <Navigate to="/chat" replace /> },
           { path: "chat/:configId?", element: <ChatPage /> },
           { path: "assistants", element: <AssistantsPage /> },
-          { path: "templates", element: <TemplatesPage /> }
+          // "new" and an id share one route: the page tells them apart.
+          { path: "assistants/:configId", element: <AssistantEditPage /> },
+          { path: "templates", element: <TemplatesPage /> },
+          { path: "templates/:templateId", element: <TemplateEditPage /> }
         ]
       }
     ]

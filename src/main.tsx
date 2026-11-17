@@ -14,7 +14,8 @@ createRoot(document.getElementById("root")!).render(
       <TooltipProvider>
         <RouterProvider router={router} />
       </TooltipProvider>
-      <Toaster />
+      {/* Top center: at the bottom right a toast covered the chat composer's Send/Stop button (QA-8-3). */}
+      <Toaster position="top-center" />
     </ThemeProvider>
   </StrictMode>
 );

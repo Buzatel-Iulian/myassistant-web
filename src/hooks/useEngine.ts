@@ -24,8 +24,15 @@ export interface UseEngine {
 
 const NO_PROGRESS: LoadProgress = { value: 0, text: "" };
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error && error.message ? error.message : "Something went wrong in the local model.";
+const FALLBACK_ERROR = "Something went wrong in the local model.";
+
+// A failure inside the worker crosses to the page as a plain string ("TypeError: Failed to fetch"), not an Error
+// (QA-8-1): keep that cause in the message, and log the raw value so it can be diagnosed from the console.
+export function errorMessage(error: unknown): string {
+  console.error("Local model error:", error);
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error.trim()) return error.trim();
+  return FALLBACK_ERROR;
 }
 
 // The bridge between components and lib/llm/engine.ts. The engine itself is one per app (module level); this hook

@@ -9,8 +9,15 @@ export interface ProblemDetail {
   status?: number;
   detail?: string;
   instance?: string;
-  // Validation failures (400): field path → message, e.g. `password` or `settings.maxTokens`.
+  // Validation failures (400): field path → message, e.g. `password`, `variables[0].name` or `settings.maxTokens`.
   fieldErrors?: Record<string, string>;
+  // Template rules that no single field can express (400 from `InvalidTemplateException`).
+  unknownPlaceholders?: string[];
+  duplicateVariables?: string[];
+  // A configuration's `variableValues` keys that its template does not declare (400).
+  unknownVariables?: string[];
+  // Deleting a template that assistants still use (409): their names.
+  configurations?: string[];
 }
 
 // --- Accounts: /api/auth, /api/users/me ---
@@ -37,7 +44,7 @@ export interface User {
   displayName: string;
 }
 
-// --- Templates (embedded in a configuration) ---
+// --- Templates: /api/templates (also embedded in a configuration) ---
 
 export interface TemplateVariable {
   name: string;
@@ -54,6 +61,18 @@ export interface Template {
   variables: TemplateVariable[];
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CreateTemplateRequest {
+  name: string;
+  description: string | null;
+  content: string;
+  variables: TemplateVariable[];
+}
+
+/** PUT sends every field plus the `version` that was read; another version means a 409. */
+export interface UpdateTemplateRequest extends CreateTemplateRequest {
+  version: number;
 }
 
 // --- Configurations ("assistants"): /api/configurations ---
@@ -81,4 +100,18 @@ export interface Configuration {
   favorite: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CreateConfigurationRequest {
+  name: string;
+  description: string | null;
+  modelId: string;
+  settings: GenerationSettings;
+  templateId: string | null;
+  variableValues: Record<string, string>;
+  favorite: boolean;
+}
+
+export interface UpdateConfigurationRequest extends CreateConfigurationRequest {
+  version: number;
 }

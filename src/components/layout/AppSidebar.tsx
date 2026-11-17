@@ -60,12 +60,12 @@ function AssistantsList() {
   if (result.status === "error") {
     return <p className="px-2 py-1.5 text-sm text-destructive">{result.message}</p>;
   }
-  if (result.configurations.length === 0) {
+  if (result.data.length === 0) {
     return <p className="px-2 py-1.5 text-sm text-muted-foreground">No assistants yet.</p>;
   }
   return (
     <SidebarMenu>
-      {result.configurations.map(configuration => {
+      {result.data.map(configuration => {
         const to = `/chat/${configuration.id}`;
         return (
           <SidebarMenuItem key={configuration.id}>

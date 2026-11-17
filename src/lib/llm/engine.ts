@@ -39,10 +39,22 @@ let pendingLoad: { modelId: string; promise: Promise<void> } | null = null;
 let progressListener: ProgressListener | null = null;
 let stopRequested = false;
 
-// WebLLM is a single ~6.5 MB module. It is imported on first use, so the rest of the app (and a browser without
-// WebGPU, which never gets here) does not download it.
+type WebLlm = typeof import("@mlc-ai/web-llm");
+let webLlm: Promise<WebLlm> | null = null;
+
+// WebLLM is a single ~6.5 MB module. It is imported on first use (a model load, or the model picker's list), so the
+// rest of the app, and a browser without WebGPU that never opens the picker, does not download it.
+function importWebLlm(): Promise<WebLlm> {
+  webLlm ??= import("@mlc-ai/web-llm").catch((error: unknown) => {
+    // A failed download of the module (offline) must not stick: the next call tries again.
+    webLlm = null;
+    throw error;
+  });
+  return webLlm;
+}
+
 function getEngine(): Promise<WebWorkerMLCEngine> {
-  engineCreation ??= import("@mlc-ai/web-llm").then(
+  engineCreation ??= importWebLlm().then(
     ({ WebWorkerMLCEngine }) => {
       // Built without a model (instead of CreateWebWorkerMLCEngine) so that every load, including the first, goes
       // through the same queue below.
@@ -52,7 +64,6 @@ function getEngine(): Promise<WebWorkerMLCEngine> {
       return engine;
     },
     (error: unknown) => {
-      // A failed download of the module (offline) must not stick: the next load tries again.
       engineCreation = null;
       throw error;
     }
@@ -110,4 +121,43 @@ export async function* streamChat(messages: ChatMessage[], params: GenerationPar
 export function stop(): void {
   stopRequested = true;
   engine?.interruptGenerate();
+}
+
+// --- The model catalogue (the model picker, Phase 9). Here too, because only this module talks to WebLLM. ---
+
+export type ModelKind = "llm" | "embedding" | "vlm";
+
+/** One of WebLLM's prebuilt models, in the app's own shape. */
+export interface PrebuiltModel {
+  id: string;
+  /** The GPU memory WebLLM estimates for it; null when the catalogue does not say. */
+  vramRequiredMB: number | null;
+  /** WebLLM's mark for models that run on low-memory devices such as laptops and phones. */
+  lowResourceRequired: boolean;
+  kind: ModelKind;
+}
+
+/** Every model of WebLLM's `prebuiltAppConfig.model_list`, in its order. Loads the WebLLM module, not the engine. */
+export async function listPrebuiltModels(): Promise<PrebuiltModel[]> {
+  const { prebuiltAppConfig, ModelType } = await importWebLlm();
+  return prebuiltAppConfig.model_list.map(record => ({
+    id: record.model_id,
+    vramRequiredMB: typeof record.vram_required_MB === "number" ? record.vram_required_MB : null,
+    lowResourceRequired: record.low_resource_required === true,
+    // A record without a type is a chat model (WebLLM's default).
+    kind: record.model_type === ModelType.embedding ? "embedding" : record.model_type === ModelType.VLM ? "vlm" : "llm"
+  }));
+}
+
+/**
+ * Whether the model's weights are already in the browser cache (Cache API), so loading it needs no download.
+ * Only reads the cache: no engine, no worker, no GPU. False when the cache cannot be read.
+ */
+export async function isModelCached(modelId: string): Promise<boolean> {
+  try {
+    const { hasModelInCache } = await importWebLlm();
+    return await hasModelInCache(modelId);
+  } catch {
+    return false;
+  }
 }

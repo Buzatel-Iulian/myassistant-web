@@ -7,10 +7,21 @@ const fake = vi.hoisted(() => ({
   interruptGenerate: vi.fn<() => void>(),
   create: vi.fn<(request: { messages: unknown[]; stream: boolean }) => Promise<AsyncIterable<unknown>>>(),
   progress: null as ((report: { progress: number; timeElapsed: number; text: string }) => void) | null,
-  instances: 0
+  instances: 0,
+  hasModelInCache: vi.fn<(modelId: string) => Promise<boolean>>()
 }));
 
 vi.mock("@mlc-ai/web-llm", () => ({
+  ModelType: { LLM: 0, embedding: 1, VLM: 2 },
+  prebuiltAppConfig: {
+    model_list: [
+      { model_id: "Chat-A-MLC", vram_required_MB: 944.62, low_resource_required: true },
+      { model_id: "Chat-B-MLC", vram_required_MB: 5001, low_resource_required: false, model_type: 0 },
+      { model_id: "Embed-MLC", vram_required_MB: 300, model_type: 1 },
+      { model_id: "Vision-MLC", model_type: 2 }
+    ]
+  },
+  hasModelInCache: fake.hasModelInCache,
   WebWorkerMLCEngine: class {
     chat = { completions: { create: fake.create } };
     reload = fake.reload;
@@ -233,6 +244,32 @@ describe("engine", () => {
       fake.create.mockResolvedValue(chunks("fresh"));
 
       expect(await collect(engine.streamChat(messages))).toEqual(["fresh"]);
+    });
+  });
+
+  describe("model catalogue", () => {
+    it("lists the prebuilt models in the app's shape, without creating an engine", async () => {
+      expect(await engine.listPrebuiltModels()).toEqual([
+        { id: "Chat-A-MLC", vramRequiredMB: 944.62, lowResourceRequired: true, kind: "llm" },
+        { id: "Chat-B-MLC", vramRequiredMB: 5001, lowResourceRequired: false, kind: "llm" },
+        { id: "Embed-MLC", vramRequiredMB: 300, lowResourceRequired: false, kind: "embedding" },
+        { id: "Vision-MLC", vramRequiredMB: null, lowResourceRequired: false, kind: "vlm" }
+      ]);
+      expect(fake.instances).toBe(0);
+      expect(workers).toHaveLength(0);
+    });
+
+    it("asks WebLLM's cache whether a model is downloaded", async () => {
+      fake.hasModelInCache.mockReset().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+      expect(await engine.isModelCached("Chat-A-MLC")).toBe(true);
+      expect(await engine.isModelCached("Chat-B-MLC")).toBe(false);
+      expect(fake.hasModelInCache).toHaveBeenCalledWith("Chat-A-MLC");
+      expect(fake.instances).toBe(0);
+    });
+
+    it("answers not cached when the cache cannot be read", async () => {
+      fake.hasModelInCache.mockReset().mockRejectedValue(new Error("SecurityError"));
+      expect(await engine.isModelCached("Chat-A-MLC")).toBe(false);
     });
   });
 });
