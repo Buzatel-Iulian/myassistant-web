@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { CircleAlert, FileText, Pencil, Plus, Trash2 } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { LoadErrorPage, LoadingPage } from "@/components/common/PageState";

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 import { AssistantForm } from "@/components/assistants/AssistantForm";
 import { LoadErrorPage, LoadingPage } from "@/components/common/PageState";

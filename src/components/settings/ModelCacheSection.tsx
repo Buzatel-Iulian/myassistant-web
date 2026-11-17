@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { HardDrive, RefreshCw, Trash2 } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";

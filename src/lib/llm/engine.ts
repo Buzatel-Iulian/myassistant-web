@@ -265,6 +265,20 @@ export async function listCachedModels(): Promise<CachedModel[]> {
   );
 }
 
+/**
+ * The size of the model's weights once its manifest is in the cache, which WebLLM fetches first: during the first
+ * download it says how much is coming before WebLLM's first progress report (QA-11-A-4). Null when not known yet.
+ */
+export async function getModelWeightsSize(modelId: string): Promise<number | null> {
+  try {
+    const { prebuiltAppConfig } = await importWebLlm();
+    const record = prebuiltAppConfig.model_list.find(item => item.model_id === modelId);
+    return record ? await cachedWeightsBytes(record.model) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Whether `modelId` is being loaded right now (its files may be downloading). */
 export function isModelLoading(modelId: string): boolean {
   return pendingLoad !== null && pendingLoad.key.startsWith(`${modelId}|`);

@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useLocation } from "react-router";
 import { CircleAlert } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 import { AuthCard } from "@/components/auth/AuthCard";
 import { returnPathFrom } from "@/components/auth/returnPath";

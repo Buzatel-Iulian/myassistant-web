@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { Navigate, Outlet, useLocation } from "react-router";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 import { Skeleton } from "@/components/ui/skeleton";
 import { returnStateFor } from "@/components/auth/returnPath";

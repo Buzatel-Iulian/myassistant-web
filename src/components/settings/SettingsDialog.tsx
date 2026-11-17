@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { HardDrive, LogOut, Monitor, Moon, Palette, Sun, UserRound, type LucideIcon } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 import { ModelCacheSection } from "@/components/settings/ModelCacheSection";
 import { Button } from "@/components/ui/button";

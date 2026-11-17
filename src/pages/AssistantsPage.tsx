@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { Bot, Copy, MessageSquare, Pencil, Plus, Star, Trash2 } from "lucide-react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { LoadErrorPage, LoadingPage } from "@/components/common/PageState";
