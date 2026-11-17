@@ -12,6 +12,7 @@ import { Card, CardAction, CardDescription, CardFooter, CardHeader, CardTitle } 
 import { useConfigurations } from "@/hooks/useConfigurations";
 import { useTemplates } from "@/hooks/useTemplates";
 import { ApiError } from "@/lib/api/client";
+import { reportUnexpected } from "@/lib/unexpected";
 import { deleteTemplate } from "@/lib/api/templates";
 import type { Configuration, Template } from "@/lib/types";
 
@@ -48,7 +49,10 @@ export function TemplatesPage() {
       await deleteTemplate(toDelete.id);
       toast.success(`Template "${toDelete.name}" deleted`);
     } catch (error) {
-      if (!(error instanceof ApiError)) throw error;
+      if (!(error instanceof ApiError)) {
+        toast.error(reportUnexpected("Deleting the template failed:", error));
+        return;
+      }
       const assistants = Array.isArray(error.problem.configurations) ? error.problem.configurations : [];
       if (error.status === 409) setInUse({ templateName: toDelete.name, assistants, detail: error.detail });
       else toast.error(error.detail);

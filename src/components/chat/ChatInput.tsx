@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, type KeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, type KeyboardEvent } from "react";
 import { Send, Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -28,6 +28,12 @@ export function ChatInput({ value, onChange, onSend, onStop, isAnswering, disabl
     el.style.height = `${el.scrollHeight}px`;
   }, [value]);
 
+  // Keyboard users land in the composer when a chat opens (after the model is ready), so they can type at once. Only
+  // with a mouse-like pointer: on a phone, focusing would pop the keyboard over the assistant's introduction.
+  useEffect(() => {
+    if (window.matchMedia?.("(pointer: fine)").matches) textareaRef.current?.focus();
+  }, []);
+
   function handleSend() {
     if (!canSend) return;
     onSend();
@@ -40,6 +46,11 @@ export function ChatInput({ value, onChange, onSend, onStop, isAnswering, disabl
       event.preventDefault();
       handleSend();
     }
+    // Escape stops the answer without leaving the keyboard for the Stop button.
+    if (event.key === "Escape" && isAnswering) {
+      event.preventDefault();
+      onStop();
+    }
   }
 
   return (
@@ -51,11 +62,12 @@ export function ChatInput({ value, onChange, onSend, onStop, isAnswering, disabl
         onKeyDown={handleKeyDown}
         placeholder={disabled ? "The model is loading…" : "Message the assistant…"}
         aria-label="Message"
+        aria-keyshortcuts="Enter Shift+Enter Escape"
         rows={1}
         className="max-h-52 min-h-10 resize-none border-none shadow-none focus-visible:ring-0"
       />
       {isAnswering ? (
-        <Button size="icon-sm" onClick={onStop} aria-label="Stop generating" title="Stop">
+        <Button size="icon-sm" onClick={onStop} aria-label="Stop generating" title="Stop (Esc)">
           <Square />
         </Button>
       ) : (

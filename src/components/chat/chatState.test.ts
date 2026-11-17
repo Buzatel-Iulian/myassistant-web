@@ -77,4 +77,19 @@ describe("chatReducer", () => {
     expect(visibleMessages(state)).toEqual([{ role: "user", content: "Say hi" }]);
     expect(state.isAnswering).toBe(false);
   });
+
+  it("withdraw takes back an unanswered user message (QA-10-1), and nothing else", () => {
+    let state = chatReducer(initialChatState(SYSTEM), { type: "send", text: "Too dense" });
+    // Still answering: nothing to take back yet.
+    expect(chatReducer(state, { type: "withdraw" })).toBe(state);
+
+    state = chatReducer(state, { type: "finishAnswer" });
+    state = chatReducer(state, { type: "withdraw" });
+    expect(visibleMessages(state)).toEqual([]);
+
+    let answered = chatReducer(initialChatState(SYSTEM), { type: "send", text: "Hi" });
+    answered = chatReducer(answered, { type: "appendAnswer", text: "Hello" });
+    answered = chatReducer(answered, { type: "finishAnswer" });
+    expect(chatReducer(answered, { type: "withdraw" })).toBe(answered);
+  });
 });

@@ -1,20 +1,25 @@
 import { useState, type FormEvent } from "react";
-import { Link, Navigate } from "react-router";
+import { Link, Navigate, useLocation } from "react-router";
 import { CircleAlert } from "lucide-react";
 import { toast } from "sonner";
 
 import { AuthCard } from "@/components/auth/AuthCard";
+import { returnPathFrom } from "@/components/auth/returnPath";
 import { FormField } from "@/components/auth/FormField";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useHydrated } from "@/hooks/useHydrated";
 import { login, register } from "@/lib/api/auth";
 import { ApiError } from "@/lib/api/client";
+import { reportUnexpected } from "@/lib/unexpected";
 import { useAuthStore } from "@/store/useAuthStore";
 
 export function RegisterPage() {
   const hydrated = useHydrated();
   const token = useAuthStore(state => state.token);
+  // A visitor sent to /login from a deep link who chose "Create one" still lands on that page (QA-7-3).
+  const location = useLocation();
+  const returnPath = returnPathFrom(location.state);
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -22,7 +27,7 @@ export function RegisterPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  if (hydrated && token) return <Navigate to="/chat" replace />;
+  if (hydrated && token) return <Navigate to={returnPath} replace />;
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -33,8 +38,11 @@ export function RegisterPage() {
       const user = await register({ email, password, displayName });
       toast.success(`Welcome, ${user.displayName}! Your account is ready.`);
     } catch (error) {
-      if (!(error instanceof ApiError)) throw error;
       setSubmitting(false);
+      if (!(error instanceof ApiError)) {
+        setFormError(reportUnexpected("Registration failed:", error));
+        return;
+      }
       // 409 is about the email ("An account with this email already exists."), so it goes next to that field.
       if (error.status === 409) setFieldErrors({ email: error.detail });
       else if (Object.keys(error.fieldErrors).length > 0) setFieldErrors(error.fieldErrors);
@@ -47,9 +55,10 @@ export function RegisterPage() {
     try {
       useAuthStore.getState().login(await login({ email, password }));
     } catch (error) {
-      if (!(error instanceof ApiError)) throw error;
       setSubmitting(false);
-      setFormError(`Your account was created, but logging in failed: ${error.detail} Log in to continue.`);
+      const detail =
+        error instanceof ApiError ? error.detail : reportUnexpected("Login after registration failed:", error);
+      setFormError(`Your account was created, but logging in failed: ${detail} Log in to continue.`);
     }
   }
 
@@ -60,7 +69,7 @@ export function RegisterPage() {
       footer={
         <span>
           Already have an account?{" "}
-          <Link to="/login" className="font-medium text-foreground underline underline-offset-4">
+          <Link to="/login" state={location.state} className="font-medium text-foreground underline underline-offset-4">
             Log in
           </Link>
         </span>

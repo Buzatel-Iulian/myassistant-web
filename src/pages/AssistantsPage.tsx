@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { useConfigurations } from "@/hooks/useConfigurations";
 import { ApiError } from "@/lib/api/client";
+import { reportUnexpected } from "@/lib/unexpected";
 import { deleteConfiguration, duplicateConfiguration } from "@/lib/api/configurations";
 import type { Configuration } from "@/lib/types";
 
@@ -29,8 +30,7 @@ export function AssistantsPage() {
     try {
       await action();
     } catch (error) {
-      if (!(error instanceof ApiError)) throw error;
-      toast.error(error.detail);
+      toast.error(error instanceof ApiError ? error.detail : reportUnexpected("Assistant action failed:", error));
     } finally {
       setBusy(false);
     }

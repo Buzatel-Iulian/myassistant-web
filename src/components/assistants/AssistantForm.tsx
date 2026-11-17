@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { ApiError } from "@/lib/api/client";
+import { reportUnexpected } from "@/lib/unexpected";
 import { createConfiguration, updateConfiguration } from "@/lib/api/configurations";
 import { configurationFormErrors, NO_ERRORS, variableValueKey, type FormErrors } from "@/lib/api/formErrors";
 import { renderSystemPrompt } from "@/lib/llm/prompt";
@@ -93,8 +94,9 @@ export function AssistantForm({ configuration, templates, onSaved, onCancel, onR
         : await createConfiguration(request);
       onSaved(saved);
     } catch (error) {
-      if (!(error instanceof ApiError)) throw error;
-      if (error.status === 409 && configuration) setStale(true);
+      if (!(error instanceof ApiError))
+        setErrors({ ...NO_ERRORS, form: reportUnexpected("Saving the assistant failed:", error) });
+      else if (error.status === 409 && configuration) setStale(true);
       else setErrors(configurationFormErrors(error));
     } finally {
       setSaving(false);

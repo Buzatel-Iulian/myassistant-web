@@ -16,11 +16,13 @@ export function AssistantHeader({ configuration }: { configuration: Pick<Configu
       </span>
       <Badge
         variant="secondary"
-        className="hidden max-w-64 truncate font-mono sm:inline-flex"
+        // The text sits in its own span: in the badge's centred flex box a long id was clipped on both sides instead
+        // of ending with an ellipsis.
+        className="hidden max-w-80 justify-start font-mono sm:inline-flex"
         data-testid="header-model-badge"
         title={configuration.modelId}
       >
-        {configuration.modelId}
+        <span className="truncate">{configuration.modelId}</span>
       </Badge>
       <Button
         variant="ghost"

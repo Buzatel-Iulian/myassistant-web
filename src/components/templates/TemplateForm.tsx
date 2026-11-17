@@ -14,6 +14,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ApiError } from "@/lib/api/client";
 import { NO_ERRORS, templateFormErrors, type FormErrors } from "@/lib/api/formErrors";
 import { createTemplate, updateTemplate } from "@/lib/api/templates";
+import { reportUnexpected } from "@/lib/unexpected";
 import { detectVariables, findPlaceholders, renderSystemPrompt } from "@/lib/llm/prompt";
 import type { Template, TemplateVariable } from "@/lib/types";
 
@@ -94,8 +95,9 @@ export function TemplateForm({ template, onSaved, onCancel, onReload }: Template
         : await createTemplate(request);
       onSaved(saved);
     } catch (error) {
-      if (!(error instanceof ApiError)) throw error;
-      if (error.status === 409 && template) setStale(true);
+      if (!(error instanceof ApiError))
+        setErrors({ ...NO_ERRORS, form: reportUnexpected("Saving the template failed:", error) });
+      else if (error.status === 409 && template) setStale(true);
       else setErrors(templateFormErrors(error, variables));
     } finally {
       setSaving(false);

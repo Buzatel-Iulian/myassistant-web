@@ -8,20 +8,33 @@ const fake = vi.hoisted(() => ({
   create: vi.fn<(request: { messages: unknown[]; stream: boolean }) => Promise<AsyncIterable<unknown>>>(),
   progress: null as ((report: { progress: number; timeElapsed: number; text: string }) => void) | null,
   instances: 0,
-  hasModelInCache: vi.fn<(modelId: string) => Promise<boolean>>()
+  hasModelInCache: vi.fn<(modelId: string) => Promise<boolean>>(),
+  deleteModelAllInfoInCache: vi.fn<(modelId: string) => Promise<void>>()
 }));
 
 vi.mock("@mlc-ai/web-llm", () => ({
   ModelType: { LLM: 0, embedding: 1, VLM: 2 },
   prebuiltAppConfig: {
     model_list: [
-      { model_id: "Chat-A-MLC", vram_required_MB: 944.62, low_resource_required: true },
-      { model_id: "Chat-B-MLC", vram_required_MB: 5001, low_resource_required: false, model_type: 0 },
+      {
+        model_id: "Chat-A-MLC",
+        model: "https://huggingface.co/mlc-ai/Chat-A-MLC",
+        vram_required_MB: 944.62,
+        low_resource_required: true
+      },
+      {
+        model_id: "Chat-B-MLC",
+        model: "https://huggingface.co/mlc-ai/Chat-B-MLC",
+        vram_required_MB: 5001,
+        low_resource_required: false,
+        model_type: 0
+      },
       { model_id: "Embed-MLC", vram_required_MB: 300, model_type: 1 },
       { model_id: "Vision-MLC", model_type: 2 }
     ]
   },
   hasModelInCache: fake.hasModelInCache,
+  deleteModelAllInfoInCache: fake.deleteModelAllInfoInCache,
   WebWorkerMLCEngine: class {
     chat = { completions: { create: fake.create } };
     reload = fake.reload;
@@ -95,7 +108,8 @@ describe("engine", () => {
     it("keeps the value between 0 and 1 and trims the text", () => {
       expect(engine.toLoadProgress(report(0.42, "  Fetching param cache[3/10]: 42%  "))).toEqual({
         value: 0.42,
-        text: "Fetching param cache[3/10]: 42%"
+        text: "Fetching param cache[3/10]: 42%",
+        stage: "downloading"
       });
       expect(engine.toLoadProgress(report(1.3)).value).toBe(1);
       expect(engine.toLoadProgress(report(-0.1)).value).toBe(0);
@@ -117,7 +131,7 @@ describe("engine", () => {
       expect(workers[0]?.url).toMatch(/worker\.ts$/);
       expect(workers[0]?.options).toEqual({ type: "module" });
       expect(fake.reload).toHaveBeenCalledWith("model-a", undefined);
-      expect(onProgress).toHaveBeenCalledWith({ value: 0.5, text: "Fetching param cache: 50%" });
+      expect(onProgress).toHaveBeenCalledWith({ value: 0.5, text: "Fetching param cache: 50%", stage: "downloading" });
       expect(engine.getLoadedModelId()).toBe("model-a");
     });
 
@@ -174,7 +188,7 @@ describe("engine", () => {
       await Promise.all([first, second]);
 
       expect(old).not.toHaveBeenCalled();
-      expect(latest).toHaveBeenCalledWith({ value: 0.1, text: "t" });
+      expect(latest).toHaveBeenCalledWith({ value: 0.1, text: "t", stage: "starting" });
     });
 
     it("lets a failed load be retried, and does not block other loads", async () => {
@@ -367,6 +381,58 @@ describe("engine", () => {
     it("answers not cached when the cache cannot be read", async () => {
       fake.hasModelInCache.mockReset().mockRejectedValue(new Error("SecurityError"));
       expect(await engine.isModelCached("Chat-A-MLC")).toBe(false);
+    });
+  });
+
+  describe("model cache (Phase 11)", () => {
+    const MANIFEST_A = "https://huggingface.co/mlc-ai/Chat-A-MLC/resolve/main/tensor-cache.json";
+    const deleted: string[] = [];
+
+    beforeEach(() => {
+      deleted.length = 0;
+      // Cache Storage with only Chat-A's weights manifest (two shards).
+      vi.stubGlobal("caches", {
+        open: async () => ({
+          match: async (url: string) =>
+            url === MANIFEST_A
+              ? new Response(JSON.stringify({ records: [{ nbytes: 300 * 1024 * 1024 }, { nbytes: 20 * 1024 * 1024 }] }))
+              : undefined,
+          delete: async (url: string) => {
+            deleted.push(url);
+            return true;
+          }
+        })
+      });
+      fake.hasModelInCache.mockReset().mockImplementation(async id => id === "Chat-A-MLC");
+      fake.deleteModelAllInfoInCache.mockReset().mockResolvedValue(undefined);
+    });
+
+    it("lists the cached models with the size of their weights from the cached manifest", async () => {
+      expect(await engine.listCachedModels()).toEqual([
+        { id: "Chat-A-MLC", sizeBytes: 320 * 1024 * 1024, vramRequiredMB: 944.62 }
+      ]);
+      expect(fake.instances).toBe(0);
+    });
+
+    it("deletes every cached file of a model through WebLLM, and its manifest", async () => {
+      await engine.deleteCachedModel("Chat-A-MLC");
+      expect(fake.deleteModelAllInfoInCache).toHaveBeenCalledWith("Chat-A-MLC");
+      expect(deleted).toEqual([MANIFEST_A]);
+    });
+
+    it("refuses to delete a model while it is loading", async () => {
+      const load = deferred();
+      fake.reload.mockReturnValue(load.promise);
+      const loading = engine.loadModel("Chat-A-MLC", noProgress);
+      await vi.waitFor(() => expect(fake.reload).toHaveBeenCalled());
+
+      expect(engine.isModelLoading("Chat-A-MLC")).toBe(true);
+      await expect(engine.deleteCachedModel("Chat-A-MLC")).rejects.toThrow(/loading right now/);
+      expect(fake.deleteModelAllInfoInCache).not.toHaveBeenCalled();
+
+      load.resolve();
+      await loading;
+      expect(engine.isModelLoading("Chat-A-MLC")).toBe(false);
     });
   });
 });

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ApiError, apiFetch } from "@/lib/api/client";
+import { ApiError, apiFetch, REQUEST_TIMEOUT_MS } from "@/lib/api/client";
 import { useAuthStore } from "@/store/useAuthStore";
 
 const FUTURE = new Date(Date.now() + 60 * 60 * 1000).toISOString();
@@ -85,6 +85,7 @@ describe("apiFetch", () => {
 
     expect(error.status).toBe(401);
     expect(useAuthStore.getState().token).toBeNull();
+    expect(useAuthStore.getState().logoutReason).toBe("expired");
     expect(sessionStorage.getItem("myassistant-auth")).not.toContain("expired");
   });
 
@@ -118,6 +119,41 @@ describe("apiFetch", () => {
 
     expect(error.status).toBe(0);
     expect(error.detail).toMatch(/Cannot reach the MyAssistant server/);
+  });
+
+  // A fetch that never answers until its signal aborts, as a request to a stuck server.
+  function hangUntilAborted() {
+    fetchMock.mockImplementation(
+      (_url, init) =>
+        new Promise((_resolve, reject) =>
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))
+        )
+    );
+  }
+
+  it("gives up a request that takes too long, with a readable ApiError (QA-7-1)", async () => {
+    const timeout = new AbortController();
+    const spy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeout.signal);
+    hangUntilAborted();
+
+    const request = caught(apiFetch("/configurations"));
+    timeout.abort(new DOMException("timed out", "TimeoutError"));
+    const error = await request;
+
+    expect(spy).toHaveBeenCalledWith(REQUEST_TIMEOUT_MS);
+    expect(error.status).toBe(0);
+    expect(error.detail).toMatch(/did not answer in time/);
+    spy.mockRestore();
+  });
+
+  it("passes the caller's own abort on as an AbortError, not an ApiError", async () => {
+    hangUntilAborted();
+    const caller = new AbortController();
+
+    const request = apiFetch("/configurations", { signal: caller.signal }).catch((reason: unknown) => reason);
+    caller.abort();
+
+    expect(await request).toMatchObject({ name: "AbortError" });
   });
 
   it("turns a gateway error page (API container down) into a readable ApiError", async () => {

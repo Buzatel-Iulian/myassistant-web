@@ -4,6 +4,14 @@ import { useAuthStore } from "@/store/useAuthStore";
 const NETWORK_ERROR = "Cannot reach the MyAssistant server. Check that it is running and try again.";
 const SERVER_UNAVAILABLE = "The MyAssistant server is not available right now. Try again in a moment.";
 const UNEXPECTED_ANSWER = "The server sent an unexpected answer. Try again.";
+const TIMED_OUT = "The MyAssistant server did not answer in time. Check that it is running and try again.";
+
+/**
+ * How long a request may take before it is given up (QA-7-1). Every API call is a small JSON exchange that answers in
+ * milliseconds; a request this slow means the API is down or stuck, and the user should hear it instead of waiting.
+ * nginx gives up connecting to a stopped API container after 5 s (`proxy_connect_timeout`), well before this.
+ */
+export const REQUEST_TIMEOUT_MS = 15_000;
 
 // Every failure of an API call, so callers handle one error type. `status` 0 means the request never got an
 // answer (the server is down or the network is gone).
@@ -68,14 +76,21 @@ export async function apiFetch<T>(path: string, init: ApiFetchInit = {}): Promis
   if (body !== undefined) headers.set("Content-Type", "application/json");
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
+  // The caller's signal (a page that unmounts) and the timeout both cancel the request; only the caller's abort is
+  // passed on as an AbortError, which callers ignore. A timeout is an answer the user must see.
+  const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const signal = rest.signal ? AbortSignal.any([rest.signal, timeout]) : timeout;
+
   let response: Response;
   try {
     response = await fetch(`/api${path}`, {
       ...rest,
+      signal,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body)
     });
   } catch (error) {
+    if (timeout.aborted && !rest.signal?.aborted) throw new ApiError(0, "Timeout", TIMED_OUT);
     if (error instanceof DOMException && error.name === "AbortError") throw error;
     throw new ApiError(0, "Network error", NETWORK_ERROR);
   }
@@ -88,7 +103,7 @@ export async function apiFetch<T>(path: string, init: ApiFetchInit = {}): Promis
     // from logging out a newer one. Logging out is enough to redirect: `RequireAuth` sends a logged-out visitor
     // to /login.
     if (response.status === 401 && token && useAuthStore.getState().token === token) {
-      useAuthStore.getState().logout();
+      useAuthStore.getState().logout("expired");
     }
     throw error;
   }

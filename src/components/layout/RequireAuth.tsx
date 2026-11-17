@@ -3,13 +3,15 @@ import { Navigate, Outlet, useLocation } from "react-router";
 import { toast } from "sonner";
 
 import { Skeleton } from "@/components/ui/skeleton";
+import { returnStateFor } from "@/components/auth/returnPath";
 import { useHydrated } from "@/hooks/useHydrated";
 import { ApiError } from "@/lib/api/client";
 import { getCurrentUser } from "@/lib/api/auth";
 import { useAuthStore } from "@/store/useAuthStore";
 
-// The app's shape in grey, as SkillForge shows it before its persisted state is read.
-function AppSkeleton() {
+// The app's shape in grey, as SkillForge shows it before its persisted state is read. Also the router's fallback
+// while the first page's code-split chunk loads.
+export function AppSkeleton() {
   return (
     <div className="flex h-svh gap-4 p-4" aria-busy="true" aria-label="Loading">
       <Skeleton className="hidden h-full w-64 rounded-lg md:block" />
@@ -48,7 +50,7 @@ export function RequireAuth() {
   }, [token, hasUser]);
 
   if (!hydrated) return <AppSkeleton />;
-  // `from` brings the user back to the page they asked for after logging in.
-  if (!token) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  // `from` brings the user back to the page they asked for after logging in (query string and hash included).
+  if (!token) return <Navigate to="/login" replace state={returnStateFor(location)} />;
   return <Outlet />;
 }

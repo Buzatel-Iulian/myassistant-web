@@ -60,7 +60,9 @@
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
+  /* Darker than shadcn's 0.556 (Phase 11 accessibility pass): secondary text on the grey "muted" surfaces measured
+     about 4.3:1, under WCAG AA's 4.5:1; 0.5 gives about 5.5:1 there and 6:1 on white. */
+  --muted-foreground: oklch(0.5 0 0);
   --accent: oklch(0.97 0 0);
   --accent-foreground: oklch(0.205 0 0);
   --destructive: oklch(0.577 0.245 27.325);

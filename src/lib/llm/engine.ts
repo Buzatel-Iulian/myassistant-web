@@ -1,5 +1,8 @@
 import type { ChatCompletionRequestBase, ChatOptions, InitProgressReport, WebWorkerMLCEngine } from "@mlc-ai/web-llm";
 
+import { weightsBytes, weightsManifestUrl } from "@/lib/llm/cache";
+import { loadStage, type LoadStage } from "@/lib/llm/progress";
+
 // The app's own shapes, so that components never depend on WebLLM's types: this module is the only one that does.
 export type ChatRole = "system" | "user" | "assistant";
 
@@ -21,17 +24,19 @@ export type GenerationParams = Pick<
  */
 export type LoadOptions = Pick<ChatOptions, "context_window_size" | "sliding_window_size">;
 
-/** Model loading progress: `value` from 0 to 1 and WebLLM's human-readable report text. */
+/** Model loading progress: `value` from 0 to 1 within the current `stage`, and WebLLM's human-readable report text. */
 export interface LoadProgress {
   value: number;
   text: string;
+  stage: LoadStage;
 }
 
 export type ProgressListener = (progress: LoadProgress) => void;
 
 export function toLoadProgress(report: InitProgressReport): LoadProgress {
   const value = Number.isFinite(report.progress) ? Math.min(1, Math.max(0, report.progress)) : 0;
-  return { value, text: report.text.trim() };
+  const text = report.text.trim();
+  return { value, text, stage: loadStage(text) };
 }
 
 // One engine (and one worker) for the whole app: a second one would load a second copy of the weights into GPU memory.
@@ -217,4 +222,64 @@ export async function isModelCached(modelId: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// --- The model cache (Settings → Model cache, Phase 11). ---
+
+// WebLLM's Cache Storage bucket for weights and tokenizers (its default cache backend, the one the app uses).
+const MODEL_CACHE = "webllm/model";
+
+/** A model whose weights are in the browser cache. */
+export interface CachedModel {
+  id: string;
+  /** The size of its weights, read from the cached manifest; null when it cannot be read. */
+  sizeBytes: number | null;
+  vramRequiredMB: number | null;
+}
+
+async function cachedWeightsBytes(modelUrl: string): Promise<number | null> {
+  try {
+    const response = await (await caches.open(MODEL_CACHE)).match(weightsManifestUrl(modelUrl));
+    return response ? weightsBytes(await response.json()) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The models whose weights are in the browser cache, with their size. WebLLM has no size API: the size is the sum of
+ * the shards listed in the model's cached manifest (`tensor-cache.json`), i.e. the weights; the tokenizer, config and
+ * wasm (a few MB) are not counted.
+ */
+export async function listCachedModels(): Promise<CachedModel[]> {
+  const { prebuiltAppConfig, hasModelInCache } = await importWebLlm();
+  const records = prebuiltAppConfig.model_list;
+  const flags = await Promise.all(records.map(record => hasModelInCache(record.model_id).catch(() => false)));
+  const cached = records.filter((_, index) => flags[index]);
+  return Promise.all(
+    cached.map(async record => ({
+      id: record.model_id,
+      sizeBytes: await cachedWeightsBytes(record.model),
+      vramRequiredMB: typeof record.vram_required_MB === "number" ? record.vram_required_MB : null
+    }))
+  );
+}
+
+/** Whether `modelId` is being loaded right now (its files may be downloading). */
+export function isModelLoading(modelId: string): boolean {
+  return pendingLoad !== null && pendingLoad.key.startsWith(`${modelId}|`);
+}
+
+/**
+ * Deletes everything WebLLM cached for `modelId` (weights, tokenizer, config, wasm), so its next load downloads it
+ * again. A model being loaded is refused: its download would write the files back half-way. A model already loaded
+ * stays in GPU memory for the open chat; the deletion applies from its next load.
+ */
+export async function deleteCachedModel(modelId: string): Promise<void> {
+  if (isModelLoading(modelId)) throw new Error("This model is loading right now. Delete it once the load has ended.");
+  const { prebuiltAppConfig, deleteModelAllInfoInCache } = await importWebLlm();
+  await deleteModelAllInfoInCache(modelId);
+  // WebLLM leaves the weights manifest behind (a few kB); without its shards it no longer counts as cached.
+  const record = prebuiltAppConfig.model_list.find(item => item.model_id === modelId);
+  if (record) await (await caches.open(MODEL_CACHE)).delete(weightsManifestUrl(record.model)).catch(() => false);
 }

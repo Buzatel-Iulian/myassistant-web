@@ -3,8 +3,9 @@
 import { Toaster as Sonner, type ToasterProps } from "sonner";
 import { CircleCheckIcon, InfoIcon, TriangleAlertIcon, OctagonXIcon, Loader2Icon } from "lucide-react";
 
-// Hand edit (the only one in ui/, as in SkillForge): the theme comes from our store, not from next-themes,
-// so the app has a single theme system that cannot disagree with itself.
+// Hand edit (the only one in ui/, as in SkillForge; AGENTS.md §2 lists both hand edits to generated files, the other
+// is hooks/use-mobile.ts): the theme comes from our store, not from next-themes, so the app has a single theme system
+// that cannot disagree with itself.
 import { useResolvedTheme } from "@/hooks/useResolvedTheme";
 
 const Toaster = ({ ...props }: ToasterProps) => {

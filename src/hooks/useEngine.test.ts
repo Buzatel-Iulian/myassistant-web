@@ -1,24 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { errorMessage } from "@/hooks/useEngine";
+import { toFailure } from "@/hooks/useEngine";
 
-describe("errorMessage (QA-8-1)", () => {
+describe("toFailure (QA-8-1)", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("keeps the message of an Error", () => {
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    expect(errorMessage(new Error("Out of memory"))).toBe("Out of memory");
-  });
-
-  it("keeps the cause the worker sends as a string, and logs the raw value", () => {
+  it("logs the raw cause the worker sends as a string, and keeps its first line as the details", () => {
     const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    expect(errorMessage("TypeError: Failed to fetch")).toBe("TypeError: Failed to fetch");
-    expect(log).toHaveBeenCalledWith("Local model error:", "TypeError: Failed to fetch");
+    const failure = toFailure("TypeError: Failed to fetch", "load");
+    expect(failure.kind).toBe("download");
+    expect(failure.details).toBe("TypeError: Failed to fetch");
+    expect(log).toHaveBeenCalledWith("Local model error (load):", "TypeError: Failed to fetch");
   });
 
   it("falls back to a readable message when there is no cause", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
-    expect(errorMessage({})).toBe("Something went wrong in the local model.");
-    expect(errorMessage("  ")).toBe("Something went wrong in the local model.");
+    const failure = toFailure({}, "answer");
+    expect(failure.title).toBe("The answer could not be generated");
+    expect(failure.details).toBeNull();
   });
 });

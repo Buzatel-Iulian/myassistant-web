@@ -1,30 +1,27 @@
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useLocation } from "react-router";
-import { CircleAlert } from "lucide-react";
+import { CircleAlert, Clock } from "lucide-react";
 import { toast } from "sonner";
 
 import { AuthCard } from "@/components/auth/AuthCard";
+import { returnPathFrom } from "@/components/auth/returnPath";
 import { FormField } from "@/components/auth/FormField";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useHydrated } from "@/hooks/useHydrated";
 import { login } from "@/lib/api/auth";
 import { ApiError } from "@/lib/api/client";
+import { reportUnexpected } from "@/lib/unexpected";
 import { useAuthStore } from "@/store/useAuthStore";
 
 const INVALID_CREDENTIALS = "Invalid email or password.";
 
-// Where RequireAuth sent the visitor from, so they come back to the page they asked for.
-function useReturnPath(): string {
-  const state: unknown = useLocation().state;
-  const from = (state as { from?: unknown } | null)?.from;
-  return typeof from === "string" && from.startsWith("/") ? from : "/chat";
-}
-
 export function LoginPage() {
   const hydrated = useHydrated();
   const token = useAuthStore(state => state.token);
-  const returnPath = useReturnPath();
+  const sessionExpired = useAuthStore(state => state.logoutReason === "expired");
+  const location = useLocation();
+  const returnPath = returnPathFrom(location.state);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -45,7 +42,10 @@ export function LoginPage() {
       toast.success("Welcome back!");
       useAuthStore.getState().login(session);
     } catch (error) {
-      if (!(error instanceof ApiError)) throw error;
+      if (!(error instanceof ApiError)) {
+        setFormError(reportUnexpected("Login failed:", error));
+        return;
+      }
       setFieldErrors(error.fieldErrors);
       // The API sends the same detail for a wrong password and an unknown email; the constant covers a 401 that
       // comes without it.
@@ -63,7 +63,12 @@ export function LoginPage() {
       footer={
         <span>
           No account yet?{" "}
-          <Link to="/register" className="font-medium text-foreground underline underline-offset-4">
+          {/* The return path goes along, so registering also ends on the page that was asked for (QA-7-3). */}
+          <Link
+            to="/register"
+            state={location.state}
+            className="font-medium text-foreground underline underline-offset-4"
+          >
             Create one
           </Link>
         </span>
@@ -71,6 +76,13 @@ export function LoginPage() {
     >
       {/* noValidate: the API's rules are the only rules, and its messages appear next to the fields. */}
       <form noValidate onSubmit={handleSubmit} className="flex flex-col gap-4">
+        {sessionExpired && !formError && (
+          <Alert data-testid="session-expired">
+            <Clock />
+            <AlertTitle>Your session has expired</AlertTitle>
+            <AlertDescription>For your security a login lasts a few hours. Log in again to continue.</AlertDescription>
+          </Alert>
+        )}
         {formError && (
           <Alert variant="destructive">
             <CircleAlert />

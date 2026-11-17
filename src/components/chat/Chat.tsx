@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router";
 import { CircleAlert, TriangleAlert } from "lucide-react";
 
 import { AssistantHeader } from "@/components/chat/AssistantHeader";
+import { EngineErrorAlert } from "@/components/chat/EngineErrorAlert";
 import { ChatInput } from "@/components/chat/ChatInput";
 import { EmptyState } from "@/components/chat/EmptyState";
 import { MessageList } from "@/components/chat/MessageList";
@@ -20,6 +21,10 @@ import { toChatOptions, type ChatOptions } from "@/lib/llm/settings";
 import type { Configuration } from "@/lib/types";
 import { useAppStore } from "@/store/useAppStore";
 import { useAuthStore } from "@/store/useAuthStore";
+
+// One wording for "this message does not fit", whether the estimate saw it before sending or WebLLM refused it
+// (QA-10-1: text denser than the estimate, with no history left to drop).
+const SHORTEN_HINT = "Shorten it, or raise the context window in Edit assistant.";
 
 // The chat reads its assistant once when it opens: an edit made meanwhile applies to the next chat, never to the
 // middle of this one (the model, the window and the prompt stay what the conversation started with).
@@ -107,19 +112,24 @@ function LoadedAssistant({ configuration }: { configuration: Configuration }) {
         <ModelLoader modelId={modelId} progress={progress} />
       </Centered>
     );
-  } else if (status === "error") {
+  } else if (status === "error" && error) {
     body = (
       <Centered>
-        <Alert variant="destructive" className="max-w-xl">
-          <CircleAlert />
-          <AlertTitle>The model could not be loaded</AlertTitle>
-          <AlertDescription>
-            <p>{error}</p>
-            <Button variant="outline" size="sm" className="mt-3" onClick={() => void load(modelId, options.load)}>
-              Try again
-            </Button>
-          </AlertDescription>
-        </Alert>
+        <EngineErrorAlert
+          failure={error}
+          modelId={modelId}
+          className="max-w-xl"
+          actions={
+            <>
+              <Button variant="outline" size="sm" onClick={() => void load(modelId, options.load)}>
+                Try again
+              </Button>
+              <Button variant="outline" size="sm" render={<Link to={`/assistants/${configuration.id}`} />}>
+                Edit assistant
+              </Button>
+            </>
+          }
+        />
       </Centered>
     );
   } else {
@@ -181,7 +191,7 @@ function Conversation({ engine, configuration, systemPrompt, options }: Conversa
     if (!fit.ok) {
       setTooLong(
         `This message is about ${fit.messageTokens} tokens, and at most ${fit.budget} fit in this assistant's context ` +
-          `window next to its answer. Shorten it, or raise the context window in Edit assistant.`
+          `window next to its answer. ${SHORTEN_HINT}`
       );
       return;
     }
@@ -190,11 +200,19 @@ function Conversation({ engine, configuration, systemPrompt, options }: Conversa
     setContextNote({ dropped: fit.dropped, systemPromptTruncated: fit.systemPromptTruncated });
     dispatch(action);
     setDraft("");
-    await send(
+    const failure = await send(
       { messages: fit.messages, params: options.request, retryMessages: retry.ok ? retry.messages : undefined },
       text => dispatch({ type: "appendAnswer", text })
     );
     dispatch({ type: "finishAnswer" });
+    if (failure?.kind === "contextOverflow") {
+      // Refused before the first token: the message goes back to the composer to be shortened.
+      dispatch({ type: "withdraw" });
+      setDraft(current => current || action.text);
+      setTooLong(
+        `This message has more tokens than the estimate allowed for, and it does not fit in this assistant's context window next to its answer. ${SHORTEN_HINT}`
+      );
+    }
   }
 
   const notices = (
@@ -228,11 +246,7 @@ function Conversation({ engine, configuration, systemPrompt, options }: Conversa
         </Alert>
       )}
       {error && (
-        <Alert variant="destructive" className="mx-auto w-full max-w-3xl">
-          <CircleAlert />
-          <AlertTitle>The answer could not be generated</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
+        <EngineErrorAlert failure={error} modelId={configuration.modelId} className="mx-auto w-full max-w-3xl" />
       )}
       {contextNote.dropped > 0 && (
         <p className="mx-auto w-full max-w-3xl text-xs text-muted-foreground" data-testid="context-note">

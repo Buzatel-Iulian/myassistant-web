@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { LogOut, Monitor, Moon, Palette, Sun, UserRound, type LucideIcon } from "lucide-react";
+import { HardDrive, LogOut, Monitor, Moon, Palette, Sun, UserRound, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 
+import { ModelCacheSection } from "@/components/settings/ModelCacheSection";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import type { Theme } from "@/lib/theme";
@@ -78,9 +79,10 @@ function AccountSection() {
   );
 }
 
-// A list, not a switch on the section id: Phase 11 adds "Model cache" as a new row here.
+// A list, not a switch on the section id: a new section is a new row here.
 const SECTIONS = [
   { id: "appearance", label: "Appearance", icon: Palette, Content: AppearanceSection },
+  { id: "model-cache", label: "Model cache", icon: HardDrive, Content: ModelCacheSection },
   { id: "account", label: "Account", icon: UserRound, Content: AccountSection }
 ] as const;
 
@@ -97,16 +99,23 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex h-[min(32rem,90vh)] gap-0 p-0 sm:max-w-3xl">
+      {/* Two panes from the small breakpoint up (SkillForge); on a phone the sections become a row of tabs above the
+          content, so the content keeps the whole width. */}
+      <DialogContent className="flex h-[min(32rem,90vh)] flex-col gap-0 p-0 sm:max-w-3xl sm:flex-row">
         <DialogTitle className="sr-only">Settings</DialogTitle>
         <DialogDescription className="sr-only">MyAssistant preferences on this device.</DialogDescription>
 
-        <nav className="flex w-44 shrink-0 flex-col gap-1 border-r bg-muted/40 p-3 sm:w-56">
+        <nav
+          aria-label="Settings sections"
+          className="flex shrink-0 gap-1 overflow-x-auto border-b bg-muted/40 p-2 pr-12 sm:w-56 sm:flex-col sm:border-r sm:border-b-0 sm:p-3"
+        >
           {SECTIONS.map(section => (
             <Button
               key={section.id}
               variant={section.id === activeSection ? "secondary" : "ghost"}
-              className="justify-start"
+              aria-current={section.id === activeSection ? "page" : undefined}
+              // On a phone the three tabs must fit next to the close button: no icons, less padding.
+              className="justify-start max-sm:px-2 max-sm:[&_svg]:hidden"
               onClick={() => setActiveSection(section.id)}
             >
               <section.icon />
@@ -115,7 +124,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           ))}
         </nav>
 
-        <div className="flex h-full flex-1 flex-col overflow-y-auto p-6">
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4 sm:h-full sm:p-6">
           <ActiveContent />
         </div>
       </DialogContent>

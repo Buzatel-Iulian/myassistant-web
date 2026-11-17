@@ -37,7 +37,7 @@ describe("useAuthStore", () => {
 
     useAuthStore.getState().logout();
 
-    expect(useAuthStore.getState()).toMatchObject({ token: null, expiresAt: null, user: null });
+    expect(useAuthStore.getState()).toMatchObject({ token: null, expiresAt: null, user: null, logoutReason: null });
   });
 
   it("restores a session that has not expired (a page reload)", async () => {
@@ -54,7 +54,12 @@ describe("useAuthStore", () => {
 
     await useAuthStore.persist.rehydrate();
 
-    expect(useAuthStore.getState()).toMatchObject({ token: null, expiresAt: null, user: null });
+    expect(useAuthStore.getState()).toMatchObject({
+      token: null,
+      expiresAt: null,
+      user: null,
+      logoutReason: "expired"
+    });
   });
 
   it("treats a stored session without a valid expiry as logged out", async () => {
@@ -76,6 +81,17 @@ describe("useAuthStore", () => {
 
     vi.advanceTimersByTime(1);
     expect(useAuthStore.getState().token).toBeNull();
+    // The login page tells the user why they are there.
+    expect(useAuthStore.getState().logoutReason).toBe("expired");
+  });
+
+  it("keeps the logout reason out of sessionStorage, and a new login clears it", () => {
+    useAuthStore.getState().login({ token: "abc", expiresAt: new Date(Date.now() + HOUR).toISOString() });
+    useAuthStore.getState().logout("expired");
+    expect(sessionStorage.getItem(STORAGE_KEY)).not.toContain("logoutReason");
+
+    useAuthStore.getState().login({ token: "new", expiresAt: new Date(Date.now() + HOUR).toISOString() });
+    expect(useAuthStore.getState().logoutReason).toBeNull();
   });
 
   it("a logout cancels the expiry timer of the old session", () => {

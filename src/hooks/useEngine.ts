@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { isContextOverflow } from "@/lib/llm/context";
+import { describeEngineError, type EngineAction, type EngineFailure } from "@/lib/llm/errors";
 import {
   isModelLoaded,
   loadModel,
@@ -27,25 +28,24 @@ export interface SendRequest {
 export interface UseEngine {
   status: EngineStatus;
   progress: LoadProgress;
-  /** Why the last load or answer failed, in words the user can read. */
-  error: string | null;
+  /** Why the last load or answer failed, in words the user can act on (never a stack trace). */
+  error: EngineFailure | null;
   load: (modelId: string, options?: LoadOptions) => Promise<void>;
-  /** Streams the answer, calling `onText` with each new piece of text. Resolves when it ends. */
-  send: (request: SendRequest, onText: (text: string) => void) => Promise<void>;
+  /**
+   * Streams the answer, calling `onText` with each new piece of text. Resolves when it ends, with the failure if it
+   * failed. A context overflow is only returned (not put in `error`): the chat shows it as "message too long".
+   */
+  send: (request: SendRequest, onText: (text: string) => void) => Promise<EngineFailure | null>;
   stop: () => void;
 }
 
-const NO_PROGRESS: LoadProgress = { value: 0, text: "" };
-
-const FALLBACK_ERROR = "Something went wrong in the local model.";
+const NO_PROGRESS: LoadProgress = { value: 0, text: "", stage: "starting" };
 
 // A failure inside the worker crosses to the page as a plain string ("TypeError: Failed to fetch"), not an Error
-// (QA-8-1): keep that cause in the message, and log the raw value so it can be diagnosed from the console.
-export function errorMessage(error: unknown): string {
-  console.error("Local model error:", error);
-  if (error instanceof Error && error.message) return error.message;
-  if (typeof error === "string" && error.trim()) return error.trim();
-  return FALLBACK_ERROR;
+// (QA-8-1). The raw value goes to the console so it can be diagnosed; the user gets what it means and what to do.
+export function toFailure(error: unknown, action: EngineAction): EngineFailure {
+  console.error(`Local model error (${action}):`, error);
+  return describeEngineError(error, action, typeof navigator === "undefined" ? true : navigator.onLine);
 }
 
 // The bridge between components and lib/llm/engine.ts. The engine itself is one per app (module level); this hook
@@ -54,7 +54,7 @@ export function errorMessage(error: unknown): string {
 export function useEngine(): UseEngine {
   const [status, setStatus] = useState<EngineStatus>("idle");
   const [progress, setProgress] = useState<LoadProgress>(NO_PROGRESS);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<EngineFailure | null>(null);
   // Only the latest load of this hook may set its status: a retry or a settings change replaces an earlier load.
   const latestLoad = useRef(0);
   const mounted = useRef(true);
@@ -85,7 +85,7 @@ export function useEngine(): UseEngine {
       setStatus("ready");
     } catch (loadError) {
       if (!isCurrent()) return;
-      setError(errorMessage(loadError));
+      setError(toFailure(loadError, "load"));
       setStatus("error");
     }
   }, []);
@@ -108,9 +108,12 @@ export function useEngine(): UseEngine {
         console.warn("The prompt did not fit the context window; retrying with less history.", sendError);
         await stream(retryMessages);
       }
+      return null;
     } catch (sendError) {
       // The model is still loaded, so the chat stays usable: the error is shown and the next message can be sent.
-      setError(errorMessage(sendError));
+      const failure = toFailure(sendError, "answer");
+      if (failure.kind !== "contextOverflow") setError(failure);
+      return failure;
     } finally {
       // Only "generating" goes back to "ready": a load started meanwhile keeps its own status.
       setStatus(current => (current === "generating" ? "ready" : current));
